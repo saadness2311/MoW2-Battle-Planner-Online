@@ -1,0 +1,319 @@
+:root{
+  --sidebar-w: 360px;            
+  --panel-bg: rgba(20,22,25,0.9); 
+  --accent: #5a5f6a;             
+  --btn-bg: #2f353f;             
+  --btn-hover: #3a414c;          
+  --scroll-bg: rgba(50,50,50,0.3);
+  --scroll-thumb: rgba(100,100,110,0.6);
+}
+
+/* ----------------- Общие сбросы ----------------- */
+*{box-sizing:border-box}
+html,body{height:100%;margin:0;padding:0}
+body{
+  font-family: Inter, Arial, Helvetica, sans-serif;
+  color:#ccc;
+  background-image:
+    linear-gradient(rgba(20,22,25,0.85), rgba(20,22,25,0.85)),
+    url('assets/ui/bg.jpg');
+  background-size: cover;
+  background-position: center;
+  background-attachment: fixed;
+  -webkit-font-smoothing:antialiased;
+  -moz-osx-font-smoothing:grayscale;
+}
+
+/* ----------------- Лэйаут ----------------- */
+.app{
+  display:flex;
+  height:100vh;
+  align-items:stretch;
+  overflow:hidden;
+}
+
+/* Сайдбар */
+.sidebar{
+  flex: 0 0 var(--sidebar-w);
+  width: var(--sidebar-w);
+  padding:16px;
+  background: var(--panel-bg);
+  overflow:auto;
+  z-index:1002;
+  box-shadow: 2px 0 12px rgba(0,0,0,0.5);
+  border-right: 1px solid rgba(255,255,255,0.05);
+}
+
+.sidebar h1{
+  margin:0 0 12px 0;
+  font-size:20px;
+  font-weight:600;
+  letter-spacing:0.4px;
+  color:#aaa;
+  text-shadow: 0 1px 3px rgba(0,0,0,0.7);
+}
+
+.sidebar section{ margin-bottom:16px; }
+.sidebar label{ display:block; font-size:13px; margin-bottom:6px; color:#999; }
+.note { font-size:12px; opacity:0.8; margin-top:8px; color:#888; }
+
+/* ----------------- Игроки / формы ----------------- */
+.team h3{ margin:8px 0 6px 0; font-size:15px; }
+
+.player-row{
+  display:flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items:center;
+  margin-bottom:8px;
+  background: rgba(50,50,50,0.3);
+  padding:6px;
+  border-radius:6px;
+}
+
+.player-row input[type="text"],
+.player-row select{
+  flex:1;
+  min-width:120px;
+  padding:5px 8px;
+  border-radius:4px;
+  border:0;
+  background:#2f353f;
+  color:#ccc;
+  outline: 1px solid rgba(100,100,110,0.3);
+}
+
+/* ----------------- Кнопки — единый тёмный стиль ----------------- */
+button {
+  padding: 4px 8px;
+  border-radius: 4px;
+  border: 0;
+  background: var(--btn-bg) !important;
+  color: #ccc !important;
+  cursor: pointer;
+  font-size: 13px;
+  transition: all 0.2s ease;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.4);
+}
+
+button:hover {
+  background: var(--btn-hover) !important;
+  transform: translateY(-1px);
+}
+
+/* Для кнопок внутри flex-контейнеров (.player-row и .row) задаём gap */
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px; /* пробел горизонтально и вертикально */
+}
+
+/* ----------------- Скрытые полосы прокрутки ----------------- */
+.sidebar::-webkit-scrollbar{ width:6px; height:6px; }
+.sidebar::-webkit-scrollbar-track{ background: var(--scroll-bg); border-radius:3px; }
+.sidebar::-webkit-scrollbar-thumb{ background: var(--scroll-thumb); border-radius:3px; }
+
+/* ----------------- Панель карты ----------------- */
+.map-area{
+  flex:1 1 auto;
+  position:relative;
+  z-index:1;
+  min-width:0;
+}
+
+#map{
+  height:100%;
+  width:100%;
+  box-shadow: inset 0 0 0 1px rgba(0,0,0,0.1);
+  position:relative;
+  z-index:1;
+}
+
+/* ----------------- Маркеры ----------------- */
+.mw2-reg{
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  pointer-events:none;
+}
+.mw2-reg img{
+  display:block;
+  border-radius:4px;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.5);
+}
+.mw2-label{
+  margin-top:4px;
+  font-size:12px;
+  text-align:center;
+  color:#ccc;
+  text-shadow: 0 1px 2px rgba(0,0,0,0.8);
+  pointer-events:none;
+}
+
+/* Командные цвета — более строгие */
+.mw2-reg.red-marker img {
+  box-shadow: 0 0 4px 1px rgba(150,30,30,0.4), 0 2px 4px rgba(0,0,0,0.4);
+  border: 1px solid rgba(150,30,30,0.4);
+}
+.mw2-reg.blue-marker img {
+  box-shadow: 0 0 4px 1px rgba(60,200,80,0.4), 0 2px 4px rgba(0,0,0,0.4);
+  border: 1px solid rgba(60,200,80,0.4);
+}
+
+/* ----------------- Leaflet — панель инструментов (темная, но читаемая) ----------------- */
+
+/* Общий фон панели и кнопок */
+.leaflet-control,
+.leaflet-draw-toolbar a,
+.leaflet-bar a {
+  background-color: rgba(60,60,70,0.9) !important;
+  border: 1px solid rgba(0,0,0,0.3) !important;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.4);
+  color: #ccc !important; /* светлосерый текст */
+  fill: #ccc !important;  /* светлосерые SVG иконки */
+  transition: all 0.2s ease;
+}
+
+/* Hover — немного светлее */
+.leaflet-control:hover,
+.leaflet-draw-toolbar a:hover,
+.leaflet-bar a:hover {
+  background-color: rgba(80,80,90,0.95) !important;
+  color: #eee !important;
+  fill: #eee !important;
+}
+
+/* Активные состояния — чуть подсвечены */
+.leaflet-bar a.leaflet-active,
+.leaflet-draw-toolbar a.leaflet-active {
+  background-color: rgba(100,100,110,0.95) !important;
+  color: #fff !important;
+  fill: #fff !important;
+}
+
+/* Если иконки внутри кнопок SVG — добавить мягкую тень */
+.leaflet-control svg,
+.leaflet-bar a svg {
+  filter: drop-shadow(0 0 2px rgba(0,0,0,0.7));
+}
+
+/* Tooltip у инструментов — сделать читаемым */
+.leaflet-draw-tooltip {
+  background: rgba(40,40,50,0.95) !important;
+  color: #ddd !important;
+  border: 1px solid rgba(255,255,255,0.1);
+  font-size: 12px;
+  border-radius: 4px;
+  padding: 4px 6px;
+}
+
+/* Контейнер карты — тёмный фон при пустой карте */
+.leaflet-container {
+  background-color: rgba(20,22,25,0.9) !important;
+}
+
+/* Осветлить иконки инструментов на карте */
+.leaflet-bar a,
+.leaflet-draw-toolbar a,
+.leaflet-control a {
+  filter: brightness(2.5) invert(0.1) !important; /* осветлить и чуть убрать черный */
+}
+
+/* При наведении — ещё чуть светлее */
+.leaflet-bar a:hover,
+.leaflet-draw-toolbar a:hover,
+.leaflet-control a:hover {
+  filter: brightness(2) invert(0) !important;
+}
+
+/* --- FIX: контраст для подменю Leaflet Draw --- */
+.leaflet-draw-actions,
+.leaflet-draw-actions a,
+.leaflet-draw-actions li a {
+  background-color: var(--panel-bg) !important; /* тёмный фон, как везде */
+  color: #ccc !important; /* читаемый текст */
+  filter: none !important; /* убрать осветление/инверсию */
+  border: 1px solid rgba(255,255,255,0.05) !important;
+}
+
+.leaflet-draw-actions a:hover {
+  background-color: var(--btn-hover) !important;
+  color: #fff !important;
+}
+
+/* Меню символов — убрать яркость/инверсию */
+.symbol-menu img {
+  filter: none !important;
+  width: 28px;
+  height: 28px;
+  border-radius: 4px;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.5);
+  transition: transform 0.2s ease;
+}
+
+/* При наведении — слегка увеличиваем */
+.symbol-menu a:hover img {
+  transform: scale(1.1);
+}
+
+/* ----------------- Меню символов ----------------- */
+.symbol-menu {
+  display: grid;
+  grid-template-columns: repeat(2, 34px); /* 2 колонки */
+  grid-auto-rows: 34px;
+  grid-gap: 4px;
+  margin-top: 2px;
+  padding: 4px;
+  background: rgba(0,0,0,0.7);
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 6px;
+  width: 80px; /* ширина под 2 колонки */
+  overflow: hidden; /* убираем полосы прокрутки */
+  z-index: 1003;
+}
+
+/* Ссылки внутри меню символов */
+.symbol-menu a {
+  width: 34px;
+  height: 34px;
+  margin: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: none !important;
+  filter: none !important; /* отменяем яркость/инверсию Leaflet */
+  box-shadow: none !important;
+}
+
+/* Картинки символов внутри меню */
+.symbol-menu a img {
+  width: 28px;
+  height: 28px;
+  border-radius: 4px;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.5);
+  filter: none !important; /* снимаем все фильтры Leaflet */
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+/* Ховер на символ */
+.symbol-menu a:hover img {
+  transform: scale(1.1);
+  box-shadow: 0 2px 6px rgba(0,0,0,0.6);
+}
+
+/* Стили для выпадающего списка карт */
+#mapSelect {
+  background-color: rgba(25,25,25,0.85); /* тёмный фон */
+  color: #fff;                            /* белый текст */
+  border: 1px solid rgba(255,255,255,0.2);
+  padding: 4px 6px;
+  border-radius: 6px;
+  font-family: sans-serif;
+  font-size: 14px;
+}
+
+/* Чтобы стрелка select тоже выглядела нормально */
+#mapSelect option {
+  background-color: #191919; /* тёмный фон для опций */
+  color: #fff;               /* белый текст для опций */
+}
