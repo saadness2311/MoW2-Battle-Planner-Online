@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VK HTML5 Game - Battle Planner</title>
+    <link rel="stylesheet" href="style.css">
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
+    <script src="https://unpkg.com/@vkontakte/vk-bridge/dist/browser.min.js"></script>
+</head>
+<body>
+<div id="lobby">
+    <h2>Выберите комнату</h2>
+    <div id="roomList"></div>
+    <input type="text" id="roomInput" placeholder="Название комнаты">
+    <button id="createRoom">Создать</button>
+</div>
+<div id="map" style="display:none;"></div>
+<script src="script.js"></script>
+</body>
+</html>
