@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>MoW2 Battle Planner</title>
+
+  <!-- Leaflet + Draw CSS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css" />
+
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<!-- Room selection / creation modal -->
+<div id="room-modal" class="room-modal hidden">
+  <div class="room-modal-card">
+    <h2>Выберите комнату или создайте новую</h2>
+    <div class="tabs">
+      <button id="tab-list" class="tab active">Список комнат</button>
+      <button id="tab-create" class="tab">Создать комнату</button>
+    </div>
+    <div id="tab-list-panel" class="tab-panel">
+      <div id="rooms-container">Загрузка списка комнат...</div>
+      <div class="controls"><button id="refresh-rooms" class="btn">Обновить</button></div>
+    </div>
+    <div id="tab-create-panel" class="tab-panel hidden">
+      <label>Имя комнаты <input id="create-name" type="text" placeholder="Название комнаты"></label>
+      <label>Пароль (опционально) <input id="create-pass" type="password" placeholder="Пароль"></label>
+      <div class="controls"><button id="create-room-btn" class="btn primary">Создать комнату</button></div>
+    </div>
+    <div class="footer"><button id="close-modal" class="btn">Закрыть</button></div>
+  </div>
+</div>
+
+<style>
+/* Modal styles (dark theme to match site) */
+.room-modal.hidden { display:none; }
+.room-modal { position:fixed; inset:0; background:rgba(0,0,0,0.6); display:flex; align-items:center; justify-content:center; z-index:9999; }
+.room-modal-card { background:#1f1f1f; color:#eee; border-radius:12px; padding:20px; width:520px; box-shadow:0 8px 30px rgba(0,0,0,0.6); font-family:inherit; }
+.room-modal-card h2 { margin-top:0; margin-bottom:12px; font-size:20px; }
+.tabs { display:flex; gap:8px; margin-bottom:12px; }
+.tab { background:transparent; color:#ccc; border:1px solid #333; padding:8px 12px; border-radius:8px; cursor:pointer; }
+.tab.active { background:#333; color:#fff; border-color:#444; }
+.tab-panel { margin-bottom:12px; }
+.tab-panel.hidden { display:none; }
+#rooms-container { max-height:240px; overflow:auto; border:1px dashed #333; padding:8px; border-radius:8px; background:#141414; }
+.room-entry { display:flex; justify-content:space-between; gap:8px; padding:8px; border-bottom:1px solid rgba(255,255,255,0.02); align-items:center; }
+.room-entry .meta { color:#bbb; font-size:13px; }
+.controls { display:flex; justify-content:flex-end; gap:8px; margin-top:10px; }
+.btn { background:#2b2b2b; color:#ddd; border:1px solid #333; padding:8px 10px; border-radius:8px; cursor:pointer; }
+.btn.primary { background:#2563eb; color:white; border-color:#1e4fd8; }
+.input-inline { display:flex; gap:8px; align-items:center; }
+.room-pass-input { margin-left:8px; padding:6px; border-radius:6px; border:1px solid #333; background:#0f0f0f; color:#eee; }
+.footer { display:flex; justify-content:flex-end; }
+</style>
+
+  <div class="app">
+    <aside class="sidebar">
+      <h1>MoW2 Battle Planner</h1>
+
+      <section class="map-select">
+        <label for="mapSelect">Выберите карту:</label>
+        <select id="mapSelect" aria-label="Выбор карты"></select>
+        <div style="margin-top:8px;">
+          <button id="btnLoadMap">Загрузить карту</button>
+          <button id="btnResetMap">Сбросить карту</button>
+        </div>
+      </section>
+
+      <section class="teams">
+        <h2>Команды</h2>
+        <div class="team" id="teamBlue">
+          <h3 style="color:#42a5f5">Синие</h3>
+          <div id="bluePlayers"></div>
+        </div>
+        <div class="team" id="teamRed">
+          <h3 style="color:#ef5350">Красные</h3>
+          <div id="redPlayers"></div>
+        </div>
+      </section>
+
+      <section class="drawing-tools">
+        <h2>Инструменты рисования</h2>
+        <div class="row">
+          <label>Цвет: <input type="color" id="drawColor" value="#ff0000" /></label>
+        </div>
+        <div class="row" style="display: flex; align-items: center; gap: 10px;">
+ 	 <label for="drawWeight">Толщина:</label>
+  	<input id="drawWeight" type="range" min="1" max="12" step="1" value="3" />
+  	<span id="weightVal">3</span>
+	</div>
+        <div class="row">
+          <button id="btnFront">Нанести линию фронта</button>
+        </div>
+<div class="row">
+  <button id="btnFillLower">Нанести область противника</button>
+</div>
+<div class="row">
+  <button id="btnAssault">Наступление противника</button>
+</div>
+        <div class="row">
+          <button id="btnEraser">Очистить фронт</button>
+          <button id="btnClearAll">Очистить карту</button>
+        </div>
+        <div class="row">
+          <button id="btnSave">Сохранить план</button>
+        </div>
+        <button id="btnSaveImage">Сохранить карту как .jpg</button>
+        <button id="loadPlan">Загрузить план</button>
+        <input type="file" id="planFileInput" accept=".json" style="display:none" />
+        <div class="note">
+          <small>Инструменты рисования находятся на панели карты. 
+        Нужно нажимать "edit" и менять линию фронта. 
+        Нужно сохранять изменения "save".<br>
+	Автор — saadness</small>
+        </div>
+      </section>
+    </aside>
+
+    <main class="map-area">
+      <div id="map"></div>
+    </main>
+  </div>
+
+  <!-- Leaflet + Draw JS -->
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
+
+
+  <script src="script.js"></script>
+
+<script>
+// Room modal + minimal WebSocket client for local testing (ws://localhost:3000/ws)
+(function(){
+  const modal = document.getElementById('room-modal');
+  const tabListBtn = document.getElementById('tab-list');
+  const tabCreateBtn = document.getElementById('tab-create');
+  const tabListPanel = document.getElementById('tab-list-panel');
+  const tabCreatePanel = document.getElementById('tab-create-panel');
+  const roomsContainer = document.getElementById('rooms-container');
+  const refreshBtn = document.getElementById('refresh-rooms');
+  const createBtn = document.getElementById('create-room-btn');
+  const closeBtn = document.getElementById('close-modal');
+  const createName = document.getElementById('create-name');
+  const createPass = document.getElementById('create-pass');
+
+  function showModal(){ modal.classList.remove('hidden'); }
+  function hideModal(){ modal.classList.add('hidden'); }
+
+  tabListBtn.onclick = ()=>{ tabListBtn.classList.add('active'); tabCreateBtn.classList.remove('active'); tabListPanel.classList.remove('hidden'); tabCreatePanel.classList.add('hidden'); }
+  tabCreateBtn.onclick = ()=>{ tabCreateBtn.classList.add('active'); tabListBtn.classList.remove('active'); tabCreatePanel.classList.remove('hidden'); tabListPanel.classList.add('hidden'); }
+
+  closeBtn.onclick = ()=>{ hideModal(); };
+
+  // WebSocket connection
+  const WS_URL = (location.protocol === 'https:') ? 'wss://' + location.host + '/ws' : 'ws://localhost:3000/ws';
+  let ws = null;
+  function connectWs(){
+    try{
+      ws = new WebSocket(WS_URL);
+      ws.addEventListener('open', ()=>{
+        console.log('WS open', WS_URL);
+        send({ type: 'list_rooms' });
+      });
+      ws.addEventListener('message', ev=>{
+        try{ const msg = JSON.parse(ev.data); handleWs(msg); }catch(e){ console.warn('bad ws msg', e); }
+      });
+      ws.addEventListener('close', ()=>{ console.log('WS closed'); setTimeout(connectWs, 1500); });
+      ws.addEventListener('error', e=>{ console.warn('WS err', e); });
+    }catch(e){ console.warn('ws connect err', e); }
+  }
+  function send(obj){ if(ws && ws.readyState===WebSocket.OPEN) ws.send(JSON.stringify(obj)); }
+
+  function handleWs(msg){
+    const { type, payload } = msg;
+    if(type === 'room_list'){
+      renderRooms(payload || []);
+    } else if(type === 'room_created'){
+      // auto-join created room
+      send({ type:'join_room', payload:{ roomId: payload.roomId, password: createPass.value || '' } });
+    } else if(type === 'room_joined'){
+      // joined -> hide modal
+      hideModal();
+      console.log('joined room', payload.roomId);
+      // optional: notify main script about join; dispatch a DOM event
+      document.dispatchEvent(new CustomEvent('room_joined', { detail: payload }));
+    } else if(type === 'room_error'){
+      alert('Ошибка комнаты: ' + payload);
+    } else if(type === 'action'){
+      // dispatch action for main script to process (if present)
+      document.dispatchEvent(new CustomEvent('remote_action', { detail: payload }));
+    }
+  }
+
+  function renderRooms(list){
+    if(!Array.isArray(list)) list = [];
+    roomsContainer.innerHTML = '';
+    if(list.length === 0){
+      roomsContainer.innerHTML = '<div class="room-entry">Нет доступных комнат</div>';
+      return;
+    }
+    list.forEach(r=>{
+      const div = document.createElement('div');
+      div.className = 'room-entry';
+      div.innerHTML = `<div><strong>${escapeHtml(r.name)}</strong><div class="meta">Игроков: ${r.clients} ${r.hasPassword? '• пароль':''}</div></div>`;
+      const right = document.createElement('div');
+      right.className = 'input-inline';
+      if(r.hasPassword){
+        const inp = document.createElement('input'); inp.placeholder='Пароль'; inp.type='password'; inp.className='room-pass-input';
+        right.appendChild(inp);
+      }
+      const btn = document.createElement('button'); btn.className='btn primary'; btn.textContent='Войти';
+      btn.onclick = ()=>{
+        const pass = right.querySelector('input') ? right.querySelector('input').value : '';
+        send({ type:'join_room', payload:{ roomId: r.id, password: pass } });
+      };
+      right.appendChild(btn);
+      div.appendChild(right);
+      roomsContainer.appendChild(div);
+    });
+  }
+
+  refreshBtn.onclick = ()=> send({ type: 'list_rooms' });
+  createBtn.onclick = ()=>{
+    const name = createName.value.trim() || 'Комната';
+    const pwd = createPass.value || '';
+    send({ type:'create_room', payload:{ name: name, password: pwd, maxPlayers: 0 } });
+  };
+
+  function escapeHtml(s){ return String(s||'').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":"&#39;"})[c]); }
+
+  // Start
+  showModal();
+  connectWs();
+
+  // expose for debugging
+  window._roomWs = { send, connectWs };
+})();
+</script>
+
+</body>
+</html>
