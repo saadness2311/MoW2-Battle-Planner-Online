@@ -1,5 +1,8 @@
-/* realtime.js — Rooms with TogetherJS
-   Версия без никнеймов + сворачиваемое меню комнат
+/* realtime.js
+   Полностью переработанная версия:
+   - Без никнеймов вообще
+   - Меню комнат можно свернуть и развернуть
+   - Сохраняется оригинальный дизайн
 */
 (function(){
   function el(id){return document.getElementById(id);}
@@ -92,21 +95,22 @@
     const createError = el('create-error');
     const overlay = el('rooms-overlay');
 
-    // 🧩 Кнопка сворачивания
+    // 🧩 Добавляем кнопку сворачивания/разворачивания меню комнат
     const toggleBtn = document.createElement('button');
     toggleBtn.id = 'rooms-toggle';
-    toggleBtn.textContent = '🏠 Комнаты';
+    toggleBtn.textContent = 'Комнаты ⤢';
     Object.assign(toggleBtn.style, {
       position: 'fixed',
       top: '10px',
-      right: '10px',
+      left: '10px',
       zIndex: 9999,
       display: 'none',
       padding: '6px 10px',
       borderRadius: '8px',
       border: '1px solid #888',
       background: '#fff',
-      cursor: 'pointer'
+      cursor: 'pointer',
+      fontSize: '14px'
     });
     document.body.appendChild(toggleBtn);
 
@@ -116,8 +120,16 @@
       overlay.style.display = overlayVisible ? 'block' : 'none';
     };
 
-    btnShow.onclick = ()=>{ createForm.style.display='block'; btnShow.style.display='none'; };
-    btnCancel.onclick = ()=>{ createForm.style.display='none'; btnShow.style.display='inline-block'; roomLinkDiv.style.display='none'; createError.innerText=''; };
+    btnShow.onclick = ()=>{
+      createForm.style.display='block';
+      btnShow.style.display='none';
+    };
+    btnCancel.onclick = ()=>{
+      createForm.style.display='none';
+      btnShow.style.display='inline-block';
+      roomLinkDiv.style.display='none';
+      createError.innerText='';
+    };
 
     btnCreate.onclick = ()=>{
       createError.innerText = '';
@@ -155,7 +167,7 @@
 
     window.startTogether = function(roomId){
       if(!window.TogetherJS){
-        alert('TogetherJS script не загружен.');
+        alert('TogetherJS не загружен.');
         return;
       }
 
@@ -163,12 +175,14 @@
       TogetherJS();
 
       TogetherJS.on("ready", function () {
+        // скрываем панель комнат
         overlay.style.display = 'none';
         toggleBtn.style.display = 'block';
         overlayVisible = false;
 
         updateCountForRoomId(roomId, 1);
         renderRooms();
+
         const roomsObj = loadRooms();
         for(const nm in roomsObj){
           TogetherJS.send({type:'announce-room', room: roomsObj[nm]});
