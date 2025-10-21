@@ -109,7 +109,43 @@
       });
     }
     return { ensurePeer, myPeerId, connectToPeer, sendToAll };
-  })();
+  })()
+// --- Map action broadcast API ---
+// Call window.broadcastMapAction({type:'marker-add', data:{...}})
+window.broadcastMapAction = function(action){
+  try{
+    // attach timestamp and sender id
+    action._ts = Date.now();
+    action._from = window.PeerBridge && window.PeerBridge.myPeerId ? window.PeerBridge.myPeerId() : 'local';
+    // send via PeerBridge if available
+    if(window.PeerBridge && typeof window.PeerBridge.sendToAll === 'function'){
+      try{ window.PeerBridge.sendToAll({ type: 'map-action', action: action }); }catch(e){ console.warn('PeerBridge sendToAll failed', e); }
+    }
+    // also write to localStorage to notify other tabs
+    try{ localStorage.setItem('__mow2_map_action', JSON.stringify({action: action, _ts: Date.now()})); }catch(e){}
+  }catch(e){ console.error('broadcastMapAction error', e); }
+};
+
+// Handler for incoming map-action messages via PeerBridge
+window.addEventListener('peerbridge:data', function(ev){
+  const data = ev.detail && ev.detail.data;
+  try{
+    if(data && data.type === 'map-action' && data.action){
+      const action = data.action;
+      // If this client is host, and action came from a client, rebroadcast to others
+      if(window._isRoomHost){
+        try{ window.PeerBridge.sendToAll({ type: 'map-action', action: action }); }catch(e){}
+      }
+      // Dispatch a DOM event so map code can listen: 'peer-map-action'
+      try{
+        window.dispatchEvent(new CustomEvent('peer-map-action', { detail: action }));
+      }catch(e){}
+      // Also write to localStorage for any existing local listeners
+      try{ localStorage.setItem('__mow2_map_action', JSON.stringify({action: action, _ts: Date.now()})); }catch(e){}
+    }
+  }catch(e){ console.warn('peerbridge map-action handler error', e); }
+});
+;
 
   // Host/join protocol handling
   window.addEventListener('peerbridge:data', function(ev){
