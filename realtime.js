@@ -62,6 +62,7 @@
   }
 
   
+
 function createRoom(name, pass){
     const rooms = loadRooms();
     if(!name || !name.trim()) throw new Error('empty-name');
@@ -70,37 +71,18 @@ function createRoom(name, pass){
     rooms[name] = { id: id, name: name, pass: pass || '', created: nowTs(), count: 0 };
     saveRooms(rooms);
 
-    // Try to broadcast this new room to all connected TogetherJS peers.
-    // If TogetherJS is loaded and running -> send directly.
-    // If TogetherJS is loaded but not running -> start it and send when ready.
-    // If TogetherJS is not loaded -> skip broadcasting (TogetherJS script may load later and will broadcast rooms on ready).
-    function sendAnnouncement() {
-      try {
-        if(window.TogetherJS && TogetherJS.running){
-          TogetherJS.send({type:'announce-room', room: rooms[name]});
-        }
-      }catch(e){
-        console.error('announce-room failed', e);
-      }
-    }
-
+    // Broadcast via TogetherJS hub if available (this does not start TogetherJS UI)
     try{
-      if(typeof TogetherJS !== 'undefined'){
-        if(TogetherJS.running){
-          sendAnnouncement();
-        } else {
-          // Start TogetherJS (this may open the TogetherJS UI for this user).
-          // We keep UI behavior unchanged; other code handles UI on ready.
-          TogetherJS();
-          TogetherJS.on("ready", function tmpSend(){
-            try{ sendAnnouncement(); }catch(e){console.error(e);}
-            // remove this handler after first run
-            try{ TogetherJS.off && TogetherJS.off("ready", tmpSend); }catch(e){}
-          });
+      if (typeof TogetherJS !== 'undefined' && TogetherJS.hub && TogetherJS.hub.emit) {
+        TogetherJS.hub.emit("announce-room", { room: rooms[name] });
+      } else {
+        // Fallback: if TogetherJS.running (a session), use TogetherJS.send to notify session members
+        if (typeof TogetherJS !== 'undefined' && TogetherJS.running) {
+          TogetherJS.send({ type: 'announce-room', room: rooms[name] });
         }
       }
     }catch(e){
-      console.error('TogetherJS announce error', e);
+      console.error('Failed to broadcast announce-room', e);
     }
 
     return rooms[name];
@@ -120,6 +102,23 @@ function createRoom(name, pass){
   }
 
   document.addEventListener('DOMContentLoaded', function(){
+    // --- TogetherJS hub announce-room listener (receives rooms from other open pages without starting sessions)
+    try{
+      if (typeof TogetherJS !== 'undefined' && TogetherJS.hub && TogetherJS.hub.on) {
+        TogetherJS.hub.on("announce-room", function (data) {
+          try {
+            if(!data || !data.room) return;
+            const rooms = loadRooms();
+            if(!rooms[data.room.name]){
+              rooms[data.room.name] = data.room;
+              saveRooms(rooms);
+              renderRooms();
+            }
+          }catch(e){console.error('announce-room handler', e);}
+        });
+      }
+    }catch(e){ console.error('TogetherJS hub on setup failed', e); }
+    
     const btnShow = el('btn-show-create');
     const createForm = el('create-form');
     const btnCancel = el('btn-cancel-create');
