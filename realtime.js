@@ -198,7 +198,17 @@ function createRoom(name, pass){
     if(changed) saveRooms(rooms);
   }
 
-  document.addEventListener('DOMContentLoaded', function(){
+  
+// Ensure TogetherJS is loaded before using it (dynamic loader to avoid syntax errors if CDN blocked)
+window.ensureTogetherJS = function(callback){
+  if(window.TogetherJS) return callback();
+  var s = document.createElement('script');
+  s.src = 'https://togetherjs.com/togetherjs-min.js';
+  s.onload = function(){ callback(); };
+  s.onerror = function(){ console.error('Failed to load TogetherJS'); alert('Не удалось загрузить TogetherJS. Проверьте подключение к интернету.'); };
+  document.head.appendChild(s);
+};
+document.addEventListener('DOMContentLoaded', function(){
 
     // --- Initialize PeerJS for cross-device P2P signaling ---
     try{
@@ -299,15 +309,11 @@ function createRoom(name, pass){
     if(params.room){ startTogether(params.room); }
 
     window.startTogether = function(roomId){
-      if(!window.TogetherJS){
-        alert('TogetherJS не загружен.');
-        return;
-      }
+      ensureTogetherJS(function(){
+        TogetherJS.config_getUserName = () => 'Игрок';
+        TogetherJS();
 
-      TogetherJS.config_getUserName = () => 'Игрок';
-      TogetherJS();
-
-      TogetherJS.on("ready", function () {
+        TogetherJS.on("ready", function () {
         // скрываем панель комнат
         overlay.style.display = 'none';
         toggleBtn.style.display = 'block';
