@@ -62,7 +62,6 @@
   }
 
   
-
 function createRoom(name, pass){
     const rooms = loadRooms();
     if(!name || !name.trim()) throw new Error('empty-name');
@@ -71,23 +70,20 @@ function createRoom(name, pass){
     rooms[name] = { id: id, name: name, pass: pass || '', created: nowTs(), count: 0 };
     saveRooms(rooms);
 
-    // Broadcast via TogetherJS hub if available (this does not start TogetherJS UI)
-    try{
+    // Try to broadcast via TogetherJS hub without starting TogetherJS UI.
+    try {
       if (typeof TogetherJS !== 'undefined' && TogetherJS.hub && TogetherJS.hub.emit) {
         TogetherJS.hub.emit("announce-room", { room: rooms[name] });
-      } else {
-        // Fallback: if TogetherJS.running (a session), use TogetherJS.send to notify session members
-        if (typeof TogetherJS !== 'undefined' && TogetherJS.running) {
-          TogetherJS.send({ type: 'announce-room', room: rooms[name] });
-        }
+      } else if (typeof TogetherJS !== 'undefined' && TogetherJS.running) {
+        TogetherJS.send({ type: 'announce-room', room: rooms[name] });
       }
-    }catch(e){
-      console.error('Failed to broadcast announce-room', e);
+    } catch(e) {
+      console.error('announce-room emit failed', e);
     }
 
     return rooms[name];
   }
-}
+
 
   function updateCountForRoomId(roomId, delta){
     const rooms = loadRooms();
@@ -102,23 +98,23 @@ function createRoom(name, pass){
   }
 
   document.addEventListener('DOMContentLoaded', function(){
-    // --- TogetherJS hub announce-room listener (receives rooms from other open pages without starting sessions)
-    try{
+    // TogetherJS hub listener to receive announce-room from other pages (no UI start).
+    try {
       if (typeof TogetherJS !== 'undefined' && TogetherJS.hub && TogetherJS.hub.on) {
-        TogetherJS.hub.on("announce-room", function (data) {
+        TogetherJS.hub.on("announce-room", function(data) {
           try {
-            if(!data || !data.room) return;
+            if (!data || !data.room) return;
             const rooms = loadRooms();
-            if(!rooms[data.room.name]){
+            if (!rooms[data.room.name]) {
               rooms[data.room.name] = data.room;
               saveRooms(rooms);
               renderRooms();
             }
-          }catch(e){console.error('announce-room handler', e);}
+          } catch(e) { console.error('announce-room handler', e); }
         });
       }
-    }catch(e){ console.error('TogetherJS hub on setup failed', e); }
-    
+    } catch(e) { console.error('TogetherJS hub setup', e); }
+
     const btnShow = el('btn-show-create');
     const createForm = el('create-form');
     const btnCancel = el('btn-cancel-create');
