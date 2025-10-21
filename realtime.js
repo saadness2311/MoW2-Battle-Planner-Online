@@ -267,6 +267,7 @@ function createRoom(name, pass){
       createError.innerText = '';
       const name = el('room-name').value.trim();
       const pass = el('room-pass').value;
+      if(!pass || !pass.trim()){ createError.innerText = 'Пароль обязателен при создании комнаты'; return; }
       try{
         const roomObj = createRoom(name, pass);
         const link = location.origin + location.pathname + '#room=' + encodeURIComponent(roomObj.id) + ( (window.PeerBridge && window.PeerBridge.myPeerId()) ? '&host=' + encodeURIComponent(window.PeerBridge.myPeerId()) : '' );
