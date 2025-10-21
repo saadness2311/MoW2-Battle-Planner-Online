@@ -1,94 +1,18 @@
 
-// Minimal PeerBridge using PeerJS Cloud (no registration required)
-// Provides ensurePeer(), myPeerId, connectToPeer(peerId), sendToAll(msg)
-window.PeerBridge = (function(){
-  let peer = null;
-  let peerId = null;
-  let conns = {}; // map peerId -> DataConnection
-  let pendingConnectPromises = {};
-
-  function ensurePeer(){
-    return new Promise(function(resolve, reject){
-      if(peer && peerId) return resolve(peer);
-      try{
-        peer = new Peer(); // uses default PeerJS cloud
-      }catch(e){
-        console.error('PeerJS init error', e);
-        return reject(e);
-      }
-      peer.on('open', function(id){
-        peerId = id;
-        console.log('[PeerBridge] Peer ready id=', id);
-        // handle incoming connections
-        peer.on('connection', function(conn){
-          const id = conn.peer;
-          console.log('[PeerBridge] connection from', id);
-          conns[id] = conn;
-          conn.on('data', function(data){
-            try{ window.dispatchEvent(new CustomEvent('peerbridge:data', { detail: { from:id, data: data } })); }
-            catch(e){ console.warn('dispatch error', e); }
-          });
-          conn.on('close', function(){ delete conns[id]; });
-          conn.on('error', function(e){ console.warn('conn error', e); });
-        });
-        resolve(peer);
-      });
-      peer.on('error', function(err){
-        console.warn('[PeerBridge] peer error', err);
-        reject(err);
-      });
-    });
-  }
-
-  function myPeerId(){ return peerId; }
-
-  function connectToPeer(otherId){
-    return new Promise(function(resolve, reject){
-      if(!peer) return reject(new Error('no-peer'));
-      if(conns[otherId]) return resolve(conns[otherId]);
-      const conn = peer.connect(otherId, { reliable: true });
-      conn.on('open', function(){
-        conns[otherId] = conn;
-        resolve(conn);
-      });
-      conn.on('error', function(e){ reject(e); });
-      // timeout fallback
-      setTimeout(function(){ if(conn.open) return; reject(new Error('connect-timeout')); }, 7000);
-    });
-  }
-
-  function sendToAll(msg){
-    Object.keys(conns).forEach(id=>{
-      try{ conns[id].send(msg); }catch(e){ console.warn('send failed', e); }
-    });
-  }
-
-  return { ensurePeer, myPeerId, connectToPeer, sendToAll };
-})();
-
-// Minimal robust realtime handler (safe, self-contained)
-// Replaces problematic realtime.js sections to ensure room creation, password handling,
-// and TogetherJS start work without breaking the page when CDN is blocked.
-
+// PeerJS-based realtime (v13) - pure PeerJS signalling, no TogetherJS
 (function(){
   'use strict';
 
   function el(id){ return document.getElementById(id); }
 
-  // Simple in-memory rooms store; still write to localStorage for compatibility but do not depend on it.
-  const ROOMS_KEY = '__mow2_rooms_v2';
-
-  function loadRooms(){
-    try{
-      const s = localStorage.getItem(ROOMS_KEY);
-      return s ? JSON.parse(s) : {};
-    }catch(e){ return {}; }
-  }
-  function saveRooms(r){
-    try{ localStorage.setItem(ROOMS_KEY, JSON.stringify(r)); }catch(e){}
-  }
+  const ROOMS_KEY = '__mow2_rooms_v3';
 
   function nowTs(){ return Date.now(); }
+
+  function loadRooms(){
+    try{ return JSON.parse(localStorage.getItem(ROOMS_KEY) || '{}'); }catch(e){ return {}; }
+  }
+  function saveRooms(r){ try{ localStorage.setItem(ROOMS_KEY, JSON.stringify(r)); }catch(e){} }
 
   function createRoom(name, pass){
     const rooms = loadRooms();
@@ -139,39 +63,83 @@ window.PeerBridge = (function(){
     location.href = roomLink;
   }
 
-  // Dynamic TogetherJS loader
-  window.ensureTogetherJS = function(callback){
-    if(window.TogetherJS) return callback();
-    var s = document.createElement('script');
-    s.src = 'https://togetherjs.com/togetherjs-min.js';
-    s.onload = function(){ callback(); };
-    s.onerror = function(){ console.error('Failed to load TogetherJS'); alert('Не удалось загрузить TogetherJS. Проверьте подключение к интернету.'); };
-    document.head.appendChild(s);
-  };
+  // Minimal PeerBridge using PeerJS Cloud
+  window.PeerBridge = (function(){
+    let peer = null;
+    let peerId = null;
+    let conns = {};
+    function ensurePeer(){
+      return new Promise(function(resolve, reject){
+        if(peer && peerId) return resolve(peer);
+        try{
+          peer = new Peer(undefined, { debug: 0 });
+        }catch(e){ console.error('Peer init failed', e); return reject(e); }
+        peer.on('open', function(id){
+          peerId = id;
+          console.log('[PeerBridge] open id=', id);
+          peer.on('connection', function(conn){
+            const id = conn.peer;
+            console.log('[PeerBridge] incoming conn from', id);
+            conns[id] = conn;
+            conn.on('data', function(data){
+              try{ window.dispatchEvent(new CustomEvent('peerbridge:data', { detail: { from: id, data: data } })); }catch(e){}
+            });
+            conn.on('close', function(){ delete conns[id]; });
+            conn.on('error', function(e){ console.warn('conn error', e); });
+          });
+          resolve(peer);
+        });
+        peer.on('error', function(err){ console.warn('[PeerBridge] error', err); reject(err); });
+      });
+    }
+    function myPeerId(){ return peerId; }
+    function connectToPeer(otherId){
+      return new Promise(function(resolve, reject){
+        if(!peer) return reject(new Error('no-peer'));
+        if(conns[otherId]) return resolve(conns[otherId]);
+        const conn = peer.connect(otherId, { reliable: true });
+        conn.on('open', function(){ conns[otherId] = conn; resolve(conn); });
+        conn.on('error', function(e){ reject(e); });
+        setTimeout(function(){ if(!conn.open) reject(new Error('connect-timeout')); }, 7000);
+      });
+    }
+    function sendToAll(msg){
+      Object.keys(conns).forEach(id=>{
+        try{ conns[id].send(msg); }catch(e){ console.warn('send failed', e); }
+      });
+    }
+    return { ensurePeer, myPeerId, connectToPeer, sendToAll };
+  })();
 
-  // Start Together session for given room id
-  window.startTogether = function(roomId){
-    ensureTogetherJS(function(){
-      try{
-        if(!window.TogetherJS){
-          alert('TogetherJS недоступен после загрузки');
-          return;
+  // Host/join protocol handling
+  window.addEventListener('peerbridge:data', function(ev){
+    const from = ev.detail.from;
+    const data = ev.detail.data;
+    try{
+      if(data && data.type === 'join-request'){
+        console.log('[PeerBridge] join-request from', from, data);
+        // Only host should accept and respond with join-accepted for its room
+        if(window._isRoomHost && window._hostRoomId && data.roomId === window._hostRoomId){
+          // increment count locally
+          try{
+            const rooms = loadRooms();
+            for(const n in rooms){ if(rooms[n].id === data.roomId){ rooms[n].count = (rooms[n].count||0) + 1; saveRooms(rooms); break; } }
+          }catch(e){}
+          // reply to requester
+          const conn = null; // sending via PeerBridge.sendToAll is the simple choice
+          window.PeerBridge.sendToAll({ type: 'join-accepted', roomId: data.roomId, fromHost: window.PeerBridge.myPeerId() });
         }
-        TogetherJS.config_getUserName = function(){ return el('nick-name') ? (el('nick-name').value || 'Игрок') : 'Игрок'; };
-        // set room via hash so other peers can join via link
-        location.hash = 'room=' + encodeURIComponent(roomId);
-        TogetherJS();
-      }catch(e){
-        console.error('startTogether error', e);
-        alert('Ошибка при запуске TogetherJS: ' + e);
       }
-    });
-  };
+      if(data && data.type === 'join-accepted'){
+        console.log('[PeerBridge] join-accepted', data);
+        // client received acceptance, can proceed (in real app start syncing)
+        alert('Подключение к комнате подтверждено хостом.');
+      }
+    }catch(e){ console.warn('peerbridge handler error', e); }
+  });
 
-  // Initialize UI bindings on DOMContentLoaded
+  // DOM init
   document.addEventListener('DOMContentLoaded', function(){
-
-    // Quick references
     const btnShow = el('btn-show-create');
     const createForm = el('create-form');
     const btnCancel = el('btn-cancel-create');
@@ -180,26 +148,15 @@ window.PeerBridge = (function(){
     const createError = el('create-error');
     const overlay = el('rooms-overlay');
 
-    // toggle button (center-top)
+    // toggle button
     const toggleBtn = document.createElement('button');
     toggleBtn.id = 'rooms-toggle';
     toggleBtn.textContent = 'Комнаты ⤢';
     Object.assign(toggleBtn.style, {
-      position: 'fixed',
-      top: '12px',
-      left: '50%',
-      transform: 'translateX(-50%)',
-      zIndex: 9999,
-      display: 'none',
-      padding: '6px 10px',
-      borderRadius: '8px',
-      border: '1px solid #888',
-      background: '#fff',
-      cursor: 'pointer',
-      fontSize: '14px'
+      position: 'fixed', top: '12px', left: '50%', transform: 'translateX(-50%)', zIndex: 9999, display: 'none',
+      padding: '6px 10px', borderRadius: '8px', border: '1px solid #888', background: '#fff', cursor: 'pointer', fontSize: '14px'
     });
     document.body.appendChild(toggleBtn);
-
     let overlayVisible = true;
     toggleBtn.addEventListener('click', function(){
       overlay.style.display = overlayVisible ? 'none' : 'block';
@@ -207,68 +164,63 @@ window.PeerBridge = (function(){
       toggleBtn.style.display = overlayVisible ? 'none' : 'block';
     });
 
-    if(btnShow) btnShow.addEventListener('click', function(){
-      if(createForm) createForm.style.display = 'block';
-      btnShow.style.display = 'none';
-    });
-    if(btnCancel) btnCancel.addEventListener('click', function(){
-      if(createForm) createForm.style.display = 'none';
-      if(btnShow) btnShow.style.display = 'inline-block';
-      if(roomLinkDiv) roomLinkDiv.style.display='none';
-      if(createError) createError.innerText='';
-    });
+    if(btnShow) btnShow.addEventListener('click', function(){ if(createForm) createForm.style.display='block'; if(btnShow) btnShow.style.display='none'; });
+    if(btnCancel) btnCancel.addEventListener('click', function(){ if(createForm) createForm.style.display='none'; if(btnShow) btnShow.style.display='inline-block'; if(roomLinkDiv) roomLinkDiv.style.display='none'; if(createError) createError.innerText=''; });
 
     if(btnCreate) btnCreate.addEventListener('click', function(){
       if(createError) createError.innerText='';
       const nameEl = el('room-name');
       const passEl = el('room-pass');
-      const nickEl = el('nick-name');
       const name = nameEl ? nameEl.value.trim() : '';
       const pass = passEl ? passEl.value : '';
       if(!name){ if(createError) createError.innerText='Название не может быть пустым'; return; }
       if(!pass || !pass.trim()){ if(createError) createError.innerText='Пароль обязателен при создании комнаты'; return; }
       try{
         const roomObj = createRoom(name, pass);
-        const link = location.origin + location.pathname + '#room=' + encodeURIComponent(roomObj.id) + (window.PeerBridge && window.PeerBridge.myPeerId ? '&host=' + encodeURIComponent(window.PeerBridge.myPeerId()) : '' );
-        if(roomLinkDiv) { roomLinkDiv.innerHTML = '<div>Ссылка: <a href="'+link+'">'+link+'</a></div>'; roomLinkDiv.style.display='block'; }
-        // hide panel
-        if(overlay) overlay.style.display='none';
-        toggleBtn.style.display='block';
-        overlayVisible = false;
-        // start TogetherJS session
-        window.startTogether(roomObj.id);
+        // ensure Peer ready and become host
+        window.PeerBridge.ensurePeer().then(function(peer){
+          window._isRoomHost = true;
+          window._hostRoomId = roomObj.id;
+          const pid = window.PeerBridge.myPeerId();
+          const link = location.origin + location.pathname + '#room=' + encodeURIComponent(roomObj.id) + '&host=' + encodeURIComponent(pid);
+          if(roomLinkDiv){ roomLinkDiv.innerHTML = '<div>Ссылка: <a href="'+link+'">'+link+'</a></div>'; roomLinkDiv.style.display='block'; }
+          if(overlay) overlay.style.display='none';
+          toggleBtn.style.display='block';
+          overlayVisible = false;
+          console.log('[Room] host ready id=', pid, 'roomId=', roomObj.id);
+        }).catch(function(err){ console.error('PeerBridge ensure failed', err); alert('Не удалось поднять PeerJS: '+err); });
       }catch(e){
         if(createError){
           if(e.message === 'empty-name') createError.innerText = 'Название не может быть пустым';
           else if(e.message === 'name-exists') createError.innerText = 'Комната с таким названием уже существует';
           else createError.innerText = 'Ошибка: ' + e.message;
-        }else console.error(e);
+        }
       }
     });
+
+    // parse URL hash to auto-join if host specified
+    function parseHash(){
+      const h = location.hash.substring(1);
+      const params = {};
+      h.split('&').forEach(part=>{
+        const kv = part.split('=');
+        if(kv[0]) params[kv[0]] = decodeURIComponent((kv[1]||''));
+      });
+      return params;
+    }
+    const params = parseHash();
+    if(params.room && params.host){
+      // attempt to connect to host
+      window.PeerBridge.ensurePeer().then(function(){
+        window.PeerBridge.connectToPeer(params.host).then(function(conn){
+          console.log('[Client] connected to host', params.host);
+          conn.send({ type: 'join-request', roomId: params.room });
+        }).catch(function(e){ console.warn('connectToPeer failed', e); alert('Не удалось подключиться к хосту: '+e); });
+      }).catch(function(e){ console.warn('ensurePeer failed', e); alert('Не удалось поднять PeerJS: '+e); });
+    }
 
     // initial render
     try{ renderRooms(); }catch(e){ console.warn('renderRooms failed', e); }
     setInterval(function(){ try{ renderRooms(); }catch(e){} }, 5000);
   });
 })();
-
-
-// Handle incoming peer messages (simple protocol)
-window.addEventListener('peerbridge:data', function(ev){
-  const from = ev.detail.from;
-  const data = ev.detail.data;
-  try{
-    if(data && data.type === 'get-rooms' && window.PeerBridge && window.PeerBridge.myPeerId){
-      // reply with rooms list
-      const rooms = (typeof loadRooms === 'function') ? loadRooms() : {};
-      const conn = null;
-    }
-    if(data && data.type === 'join-request'){
-      // if host, accept and reply with roomId confirmation
-      if(typeof window._isRoomHost !== 'undefined' && window._isRoomHost){
-        // simply send back 'join-accepted' with roomId
-        window.PeerBridge.sendToAll({ type: 'join-accepted', roomId: data.roomId });
-      }
-    }
-  }catch(e){ console.warn('peerbridge:data handler error', e); }
-});
