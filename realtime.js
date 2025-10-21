@@ -1,4 +1,71 @@
 
+// Minimal PeerBridge using PeerJS Cloud (no registration required)
+// Provides ensurePeer(), myPeerId, connectToPeer(peerId), sendToAll(msg)
+window.PeerBridge = (function(){
+  let peer = null;
+  let peerId = null;
+  let conns = {}; // map peerId -> DataConnection
+  let pendingConnectPromises = {};
+
+  function ensurePeer(){
+    return new Promise(function(resolve, reject){
+      if(peer && peerId) return resolve(peer);
+      try{
+        peer = new Peer(); // uses default PeerJS cloud
+      }catch(e){
+        console.error('PeerJS init error', e);
+        return reject(e);
+      }
+      peer.on('open', function(id){
+        peerId = id;
+        console.log('[PeerBridge] Peer ready id=', id);
+        // handle incoming connections
+        peer.on('connection', function(conn){
+          const id = conn.peer;
+          console.log('[PeerBridge] connection from', id);
+          conns[id] = conn;
+          conn.on('data', function(data){
+            try{ window.dispatchEvent(new CustomEvent('peerbridge:data', { detail: { from:id, data: data } })); }
+            catch(e){ console.warn('dispatch error', e); }
+          });
+          conn.on('close', function(){ delete conns[id]; });
+          conn.on('error', function(e){ console.warn('conn error', e); });
+        });
+        resolve(peer);
+      });
+      peer.on('error', function(err){
+        console.warn('[PeerBridge] peer error', err);
+        reject(err);
+      });
+    });
+  }
+
+  function myPeerId(){ return peerId; }
+
+  function connectToPeer(otherId){
+    return new Promise(function(resolve, reject){
+      if(!peer) return reject(new Error('no-peer'));
+      if(conns[otherId]) return resolve(conns[otherId]);
+      const conn = peer.connect(otherId, { reliable: true });
+      conn.on('open', function(){
+        conns[otherId] = conn;
+        resolve(conn);
+      });
+      conn.on('error', function(e){ reject(e); });
+      // timeout fallback
+      setTimeout(function(){ if(conn.open) return; reject(new Error('connect-timeout')); }, 7000);
+    });
+  }
+
+  function sendToAll(msg){
+    Object.keys(conns).forEach(id=>{
+      try{ conns[id].send(msg); }catch(e){ console.warn('send failed', e); }
+    });
+  }
+
+  return { ensurePeer, myPeerId, connectToPeer, sendToAll };
+})();
+
 // Minimal robust realtime handler (safe, self-contained)
 // Replaces problematic realtime.js sections to ensure room creation, password handling,
 // and TogetherJS start work without breaking the page when CDN is blocked.
@@ -162,7 +229,7 @@
       if(!pass || !pass.trim()){ if(createError) createError.innerText='Пароль обязателен при создании комнаты'; return; }
       try{
         const roomObj = createRoom(name, pass);
-        const link = location.origin + location.pathname + '#room=' + encodeURIComponent(roomObj.id) + (window.PeerBridge && window.PeerBridge.myPeerId ? '?host=' + encodeURIComponent(window.PeerBridge.myPeerId()) : '' );
+        const link = location.origin + location.pathname + '#room=' + encodeURIComponent(roomObj.id) + (window.PeerBridge && window.PeerBridge.myPeerId ? '&host=' + encodeURIComponent(window.PeerBridge.myPeerId()) : '' );
         if(roomLinkDiv) { roomLinkDiv.innerHTML = '<div>Ссылка: <a href="'+link+'">'+link+'</a></div>'; roomLinkDiv.style.display='block'; }
         // hide panel
         if(overlay) overlay.style.display='none';
@@ -184,3 +251,24 @@
     setInterval(function(){ try{ renderRooms(); }catch(e){} }, 5000);
   });
 })();
+
+
+// Handle incoming peer messages (simple protocol)
+window.addEventListener('peerbridge:data', function(ev){
+  const from = ev.detail.from;
+  const data = ev.detail.data;
+  try{
+    if(data && data.type === 'get-rooms' && window.PeerBridge && window.PeerBridge.myPeerId){
+      // reply with rooms list
+      const rooms = (typeof loadRooms === 'function') ? loadRooms() : {};
+      const conn = null;
+    }
+    if(data && data.type === 'join-request'){
+      // if host, accept and reply with roomId confirmation
+      if(typeof window._isRoomHost !== 'undefined' && window._isRoomHost){
+        // simply send back 'join-accepted' with roomId
+        window.PeerBridge.sendToAll({ type: 'join-accepted', roomId: data.roomId });
+      }
+    }
+  }catch(e){ console.warn('peerbridge:data handler error', e); }
+});
