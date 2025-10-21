@@ -9,6 +9,109 @@
   function nowTs(){return Date.now();}
   const ROOMS_KEY = 'mow2_rooms_v1';
 
+// --- PeerJS-based multi-device signaling (uses PeerJS Cloud for signaling) ---
+window._peerState = window._peerState || {};
+(function(){
+  const peerState = window._peerState;
+  peerState.peers = peerState.peers || {}; // data connections map peerId -> conn
+  peerState.myPeerId = peerState.myPeerId || null;
+  peerState.peer = peerState.peer || null;
+  peerState.hostConnections = peerState.hostConnections || {}; // if this client is host for rooms
+
+  function makePeerId(){
+    return 'mow2-' + Math.random().toString(36).slice(2,8);
+  }
+
+  // Ensure we have a Peer object (PeerJS Cloud)
+  function ensurePeer(){
+    if(peerState.peer) return Promise.resolve(peerState.peer);
+    return new Promise((resolve, reject)=>{
+      try {
+        const p = new Peer(); // defaults to PeerJS Cloud
+        peerState.peer = p;
+        p.on('open', function(id){
+          peerState.myPeerId = id;
+          console.log('[PeerJS] open id=', id);
+          resolve(p);
+        });
+        p.on('connection', function(conn){
+          console.log('[PeerJS] incoming conn from', conn.peer);
+          setupConnectionHandlers(conn);
+        });
+        p.on('error', function(err){ console.warn('[PeerJS] error', err); });
+      } catch(e){
+        console.warn('PeerJS init failed', e);
+        reject(e);
+      }
+    });
+  }
+
+  // Setup handlers for a DataConnection
+  function setupConnectionHandlers(conn){
+    peerState.peers[conn.peer] = conn;
+    conn.on('data', function(data){
+      try{
+        if(!data || !data.type) return;
+        if(data.type === 'get-rooms'){
+          // send current rooms
+          const rooms = loadRooms();
+          conn.send({ type: 'rooms-init', rooms: rooms });
+        } else if(data.type === 'rooms-init'){
+          // merge rooms
+          const rooms = loadRooms();
+          for(const nm in data.rooms){
+            if(!rooms[nm]){
+              rooms[nm] = data.rooms[nm];
+            }
+          }
+          saveRooms(rooms);
+          renderRooms();
+        } else if(data.type === 'room-created' && data.room){
+          const rooms = loadRooms();
+          if(!rooms[data.room.name]){
+            rooms[data.room.name] = data.room;
+            saveRooms(rooms);
+            renderRooms();
+          }
+        } else if(data.type === 'map-action' && data.action){
+          const ev2 = new CustomEvent('realtime-map-action', {detail: data.action});
+          window.dispatchEvent(ev2);
+        }
+      }catch(e){ console.error('peer data handler', e); }
+    });
+    conn.on('open', function(){ console.log('[PeerJS] conn open to', conn.peer); });
+    conn.on('close', function(){ delete peerState.peers[conn.peer]; console.log('[PeerJS] conn closed', conn.peer); });
+    conn.on('error', function(err){ console.warn('[PeerJS] conn error', err); });
+  }
+
+  // Connect to a peerId (used to reach room host)
+  function connectToPeer(peerId){
+    return ensurePeer().then(p=>{
+      if(peerState.peers[peerId]) return peerState.peers[peerId];
+      try{
+        const conn = p.connect(peerId, { reliable: true });
+        setupConnectionHandlers(conn);
+        return conn;
+      }catch(e){ console.warn('connectToPeer failed', e); throw e; }
+    });
+  }
+
+  // Expose minimal API
+  window.PeerBridge = {
+    ensurePeer,
+    connectToPeer,
+    sendToAll: function(msg){
+      // send message to all connected peers
+      for(const pid in peerState.peers){
+        try{ peerState.peers[pid].send(msg); }catch(e){}
+      }
+    },
+    myPeerId: function(){ return peerState.myPeerId; },
+    peerState: peerState
+  };
+})();
+// --- end PeerJS bridge ---
+
   function loadRooms(){
     try{
       const raw = localStorage.getItem(ROOMS_KEY);
@@ -70,20 +173,18 @@ function createRoom(name, pass){
     rooms[name] = { id: id, name: name, pass: pass || '', created: nowTs(), count: 0 };
     saveRooms(rooms);
 
-    // Try to broadcast via TogetherJS hub without starting TogetherJS UI.
-    try {
-      if (typeof TogetherJS !== 'undefined' && TogetherJS.hub && TogetherJS.hub.emit) {
-        TogetherJS.hub.emit("announce-room", { room: rooms[name] });
-      } else if (typeof TogetherJS !== 'undefined' && TogetherJS.running) {
-        TogetherJS.send({ type: 'announce-room', room: rooms[name] });
+    // Broadcast to connected peers via PeerJS DataConnections if available
+    try{
+      if(window.PeerBridge && window.PeerBridge.peerState){
+        // send to all known peers
+        window.PeerBridge.sendToAll({ type: 'room-created', room: rooms[name] });
       }
-    } catch(e) {
-      console.error('announce-room emit failed', e);
-    }
+    }catch(e){ console.warn('peer broadcast failed', e); }
 
     return rooms[name];
   }
 
+  }
 
   function updateCountForRoomId(roomId, delta){
     const rooms = loadRooms();
@@ -98,62 +199,27 @@ function createRoom(name, pass){
   }
 
   document.addEventListener('DOMContentLoaded', function(){
-    // TogetherJS hub listener to receive announce-room from other pages (no UI start).
-    try {
-      if (typeof TogetherJS !== 'undefined' && TogetherJS.hub && TogetherJS.hub.on) {
-        TogetherJS.hub.on("announce-room", function(data) {
-          try {
-            if (!data || !data.room) return;
-            const rooms = loadRooms();
-            if (!rooms[data.room.name]) {
-              rooms[data.room.name] = data.room;
-              saveRooms(rooms);
-              renderRooms();
-            }
-          } catch(e) { console.error('announce-room handler', e); }
-        });
-      }
-    } catch(e) { console.error('TogetherJS hub setup', e); }
 
-    
-    // --- TogetherJS auto-init on page load to ensure hub websocket ---
+    // --- Initialize PeerJS for cross-device P2P signaling ---
     try{
-      if(typeof TogetherJS !== 'undefined'){
-        // Ensure hub event handlers exist before starting
-        var _onReadyClose = function(){
-          try{
-            // try to immediately close any visible UI
-            if(TogetherJS.finish) { TogetherJS.finish(); }
-            if(TogetherJS.stop) { TogetherJS.stop(); }
-          }catch(e){}
-        };
-        try{
-          if(TogetherJS.on) {
-            TogetherJS.on('ready', _onReadyClose);
-            TogetherJS.on('togetherjs.hello', _onReadyClose);
+      if(window.PeerBridge){
+        window.PeerBridge.ensurePeer().then(function(p){
+          console.log('[PeerBridge] peer ready id=', window.PeerBridge.myPeerId());
+          // If URL contains host param, connect to host to request rooms
+          var h = parseHash();
+          if(h.host){
+            try{
+              window.PeerBridge.connectToPeer(h.host).then(function(conn){
+                // request current rooms from host
+                conn.send({ type: 'get-rooms' });
+              }).catch(function(e){ console.warn('connect to host failed', e); });
+            }catch(e){ console.warn('peer connect error', e); }
           }
-          if(TogetherJS.hub && TogetherJS.hub.on) {
-            TogetherJS.hub.on('togetherjs.hello', _onReadyClose);
-          }
-        }catch(e){}
-        // Config minimal UI interactions
-        try{ TogetherJS.config && TogetherJS.config('suppressJoinConfirmation', true); }catch(e){}
-        try{ TogetherJS.config && TogetherJS.config('dontShowClicks', true); }catch(e){}
-        // Start TogetherJS to ensure WebSocket to hub is created; close shortly after
-        try{
-          if(!TogetherJS.running){
-            if(TogetherJS.start) TogetherJS.start();
-            else if(typeof TogetherJS === 'function') { try{ TogetherJS(); }catch(e){} }
-            // Fallback timeout to ensure we close UI
-            setTimeout(_onReadyClose, 1000);
-            console.log('[auto-init] TogetherJS start attempted to establish hub connection');
-          }
-        }catch(e){ console.warn('[auto-init] TogetherJS start failed', e); }
+        }).catch(function(){ console.warn('PeerBridge ensurePeer failed'); });
       }
-    }catch(e){ console.warn('[auto-init] TogetherJS auto-init error', e); }
-    // --- end auto-init ---
-
-const btnShow = el('btn-show-create');
+    }catch(e){ console.warn('PeerBridge init failed', e); }
+    // --- end PeerJS init ---
+    const btnShow = el('btn-show-create');
     const createForm = el('create-form');
     const btnCancel = el('btn-cancel-create');
     const btnCreate = el('btn-create-room');
@@ -168,7 +234,7 @@ const btnShow = el('btn-show-create');
     Object.assign(toggleBtn.style, {
       position: 'fixed',
       top: '10px',
-      left: '10px',
+      left: '50%', transform: 'translateX(-50%)',
       zIndex: 9999,
       display: 'none',
       padding: '6px 10px',
@@ -203,7 +269,7 @@ const btnShow = el('btn-show-create');
       const pass = el('room-pass').value;
       try{
         const roomObj = createRoom(name, pass);
-        const link = location.origin + location.pathname + '#room=' + encodeURIComponent(roomObj.id);
+        const link = location.origin + location.pathname + '#room=' + encodeURIComponent(roomObj.id) + ( (window.PeerBridge && window.PeerBridge.myPeerId()) ? '&host=' + encodeURIComponent(window.PeerBridge.myPeerId()) : '' );
         roomLinkDiv.innerHTML = '<div>Ссылка: <a href="'+link+'">'+link+'</a></div>';
         roomLinkDiv.style.display='block';
         startTogether(roomObj.id);
@@ -290,9 +356,14 @@ const btnShow = el('btn-show-create');
 
       window.sendMapAction = function(action){
         action._ts = nowTs();
-        if(window.TogetherJS && TogetherJS.running){
-          TogetherJS.send({type:'map-action', action: action});
-        }
+        try{
+          if(window.BroadcastChannel){
+            window._roomsBC = window._roomsBC || new BroadcastChannel('mow2_rooms_channel');
+            window._roomsBC.postMessage({ type: 'map-action', action: action });
+          }
+          // Fallback: write to storage to notify other tabs
+          try{ localStorage.setItem('__mow2_map_action', JSON.stringify({action: action, _ts:Date.now()})); }catch(e){}
+        }catch(e){}
       };
     };
 
