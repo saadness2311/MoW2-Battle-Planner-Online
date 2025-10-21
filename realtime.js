@@ -115,7 +115,45 @@ function createRoom(name, pass){
       }
     } catch(e) { console.error('TogetherJS hub setup', e); }
 
-    const btnShow = el('btn-show-create');
+    
+    // --- TogetherJS auto-init on page load to ensure hub websocket ---
+    try{
+      if(typeof TogetherJS !== 'undefined'){
+        // Ensure hub event handlers exist before starting
+        var _onReadyClose = function(){
+          try{
+            // try to immediately close any visible UI
+            if(TogetherJS.finish) { TogetherJS.finish(); }
+            if(TogetherJS.stop) { TogetherJS.stop(); }
+          }catch(e){}
+        };
+        try{
+          if(TogetherJS.on) {
+            TogetherJS.on('ready', _onReadyClose);
+            TogetherJS.on('togetherjs.hello', _onReadyClose);
+          }
+          if(TogetherJS.hub && TogetherJS.hub.on) {
+            TogetherJS.hub.on('togetherjs.hello', _onReadyClose);
+          }
+        }catch(e){}
+        // Config minimal UI interactions
+        try{ TogetherJS.config && TogetherJS.config('suppressJoinConfirmation', true); }catch(e){}
+        try{ TogetherJS.config && TogetherJS.config('dontShowClicks', true); }catch(e){}
+        // Start TogetherJS to ensure WebSocket to hub is created; close shortly after
+        try{
+          if(!TogetherJS.running){
+            if(TogetherJS.start) TogetherJS.start();
+            else if(typeof TogetherJS === 'function') { try{ TogetherJS(); }catch(e){} }
+            // Fallback timeout to ensure we close UI
+            setTimeout(_onReadyClose, 1000);
+            console.log('[auto-init] TogetherJS start attempted to establish hub connection');
+          }
+        }catch(e){ console.warn('[auto-init] TogetherJS start failed', e); }
+      }
+    }catch(e){ console.warn('[auto-init] TogetherJS auto-init error', e); }
+    // --- end auto-init ---
+
+const btnShow = el('btn-show-create');
     const createForm = el('create-form');
     const btnCancel = el('btn-cancel-create');
     const btnCreate = el('btn-create-room');
