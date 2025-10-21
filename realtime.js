@@ -61,18 +61,51 @@
     location.href = roomLink;
   }
 
-  function createRoom(name, pass){
+  
+function createRoom(name, pass){
     const rooms = loadRooms();
     if(!name || !name.trim()) throw new Error('empty-name');
     if(rooms[name]) throw new Error('name-exists');
     const id = 'r' + Math.random().toString(36).slice(2,10);
     rooms[name] = { id: id, name: name, pass: pass || '', created: nowTs(), count: 0 };
     saveRooms(rooms);
-    if(window.TogetherJS && TogetherJS.running){
-      TogetherJS.send({type:'announce-room', room: rooms[name]});
+
+    // Try to broadcast this new room to all connected TogetherJS peers.
+    // If TogetherJS is loaded and running -> send directly.
+    // If TogetherJS is loaded but not running -> start it and send when ready.
+    // If TogetherJS is not loaded -> skip broadcasting (TogetherJS script may load later and will broadcast rooms on ready).
+    function sendAnnouncement() {
+      try {
+        if(window.TogetherJS && TogetherJS.running){
+          TogetherJS.send({type:'announce-room', room: rooms[name]});
+        }
+      }catch(e){
+        console.error('announce-room failed', e);
+      }
     }
+
+    try{
+      if(typeof TogetherJS !== 'undefined'){
+        if(TogetherJS.running){
+          sendAnnouncement();
+        } else {
+          // Start TogetherJS (this may open the TogetherJS UI for this user).
+          // We keep UI behavior unchanged; other code handles UI on ready.
+          TogetherJS();
+          TogetherJS.on("ready", function tmpSend(){
+            try{ sendAnnouncement(); }catch(e){console.error(e);}
+            // remove this handler after first run
+            try{ TogetherJS.off && TogetherJS.off("ready", tmpSend); }catch(e){}
+          });
+        }
+      }
+    }catch(e){
+      console.error('TogetherJS announce error', e);
+    }
+
     return rooms[name];
   }
+}
 
   function updateCountForRoomId(roomId, delta){
     const rooms = loadRooms();
