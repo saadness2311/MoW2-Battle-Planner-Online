@@ -1,4 +1,156 @@
 // script.js
+
+/* --- Supabase multiplayer integration START --- */
+/* Replace these with your Supabase project URL and anon public key.
+   Instructions to fill these values are in README.md (search for SUPABASE_URL).
+*/
+const SUPABASE_URL = 'https://zqklzhipwiifrrbyentg.supabase.co';
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inpxa2x6aGlwd2lpZnJyYnllbnRnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjA5NzQ0ODYsImV4cCI6MjA3NjU1MDQ4Nn0.siMc2xCvoBEjwNVwaOVvjlOtDODs9yDo0IDyGl9uWso';
+
+/* Supabase client (will be available after including supabase script) */
+let supabaseClient = null;
+try {
+  if(typeof supabase !== 'undefined'){
+    supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  } else {
+    console.warn('Supabase script not found - real-time disabled until keys are provided and script loaded.');
+  }
+} catch(e){
+  console.error('Supabase init error', e);
+}
+
+/* Room state */
+let currentRoomId = null;
+let currentNick = null;
+let _suppressRemoteLoad = false;
+let _lastLocalSave = 0;
+
+/* Create a room (returns {id,name}) */
+async function createRoom(name){
+  if(!supabaseClient) throw new Error('Supabase client not initialized');
+  const now = new Date().toISOString();
+  const payload = { name: name, state: {}, created_at: now, updated_at: now };
+  const { data, error } = await supabaseClient.from('rooms').insert(payload).select().limit(1);
+  if(error) { console.error('createRoom error', error); throw error; }
+  return data && data[0];
+}
+
+/* List rooms */
+async function listRooms(){
+  if(!supabaseClient) return [];
+  const { data, error } = await supabaseClient.from('rooms').select('id,name,updated_at').order('updated_at', {ascending:false}).limit(100);
+  if(error){ console.error('listRooms error', error); return []; }
+  return data || [];
+}
+
+/* Join a room by id, set nickname */
+async function joinRoom(roomId, nick){
+  if(!supabaseClient) throw new Error('Supabase not initialized');
+  currentRoomId = roomId;
+  currentNick = nick;
+  // fetch current state
+  const { data, error } = await supabaseClient.from('rooms').select('state').eq('id', roomId).single();
+  if(error){ console.error('joinRoom fetch error', error); }
+  if(data && data.state){
+    _suppressRemoteLoad = true;
+    try { loadFullRoomState(data.state); } catch(e){ console.error(e); }
+    _suppressRemoteLoad = false;
+  }
+  // subscribe to room changes
+  subscribeToRoom(roomId);
+  updateRoomUI();
+}
+
+/* Leave room */
+function leaveRoom(){
+  currentRoomId = null;
+  currentNick = null;
+  unsubscribeRoom();
+  document.getElementById('roomStatus').textContent = 'Не в комнате';
+  document.getElementById('btnLeaveRoom').style.display = 'none';
+}
+
+/* Save room state (uploads entire echelonStates) */
+async function saveRoomState(){
+  if(!supabaseClient || !currentRoomId) return;
+  try {
+    const now = new Date().toISOString();
+    const payload = { id: currentRoomId, state: echelonStates, updated_at: now, last_editor: currentNick || null };
+    // try update; if fails, upsert via insert...on conflict
+    const { error } = await supabaseClient.from('rooms').upsert(payload, {onConflict: 'id'});
+    if(error) console.error('saveRoomState error', error);
+    _lastLocalSave = Date.now();
+  } catch(e){ console.error('saveRoomState exception', e); }
+}
+
+/* Subscribe to changes for a given room id */
+let _roomSubscription = null;
+function unsubscribeRoom(){
+  if(_roomSubscription){
+    try{ supabaseClient.removeChannel(_roomSubscription); }catch(e){/*ignore*/ }
+    _roomSubscription = null;
+  }
+}
+function subscribeToRoom(roomId){
+  if(!supabaseClient) return;
+  unsubscribeRoom();
+  try {
+    _roomSubscription = supabaseClient.channel('room-'+roomId)
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'rooms', filter: `id=eq.${roomId}` }, payload=>{
+        // ignore our own recent saves
+        if(Date.now() - _lastLocalSave < 500) return;
+        if(_suppressRemoteLoad) return;
+        if(payload && payload.new && payload.new.state){
+          try{
+            loadFullRoomState(payload.new.state);
+            document.getElementById('roomStatus').textContent = 'Синхронизировано: ' + (payload.new.last_editor || 'unknown');
+          } catch(e){ console.error('Error applying remote state', e); }
+        }
+      })
+      .subscribe();
+  } catch(e){ console.error('subscribeToRoom error', e); }
+}
+
+/* Load full room state (apply to local map) */
+function loadFullRoomState(state){
+  if(!state) return;
+  // assume state is the same shape as echelonStates; replace local and reload currentEchelon
+  try {
+    // merge or replace
+    echelonStates = state;
+    // ensure currentEchelon within bounds
+    if(typeof currentEchelon === 'undefined') currentEchelon = 0;
+    if(!echelonStates[currentEchelon]) currentEchelon = 0;
+    clearMapAll(); // helper to remove markers, drawings, etc.
+    loadEchelonState(currentEchelon);
+    console.log('Loaded remote room state');
+  } catch(e){ console.error(e); }
+}
+
+/* Helper to clear the map fully before loading */
+function clearMapAll(){
+  // remove all markers and drawings
+  markerList.slice().forEach(m=>{
+    try{ map.removeLayer(m.marker); }catch(e){}
+  });
+  markerList = [];
+  simpleMarkers.slice().forEach(m=>{ try{ map.removeLayer(m); }catch(e){} });
+  simpleMarkers = [];
+  drawnItems.clearLayers();
+}
+
+/* Hook saveCurrentEchelonState to also save to Supabase when in room.
+   We'll call this function from saveCurrentEchelonState by name.
+*/
+async function _maybeSaveRoomStateHook(){
+  if(currentRoomId && supabaseClient){
+    try{
+      await saveRoomState();
+    }catch(e){ console.error(e); }
+  }
+}
+
+/* --- Supabase multiplayer integration END --- */
 // ------------ Конфигурация ------------
 const MAP_COUNT = 25; // теперь map1..map25
 const MAP_FILE_PREFIX = "map"; // map1.jpg
@@ -731,6 +883,9 @@ function saveCurrentEchelonState() {
       return drawings;
     })()
   };
+
+  // Save to Supabase room if joined
+  try{ _maybeSaveRoomStateHook(); }catch(e){/*ignore*/}
 }
 
 function loadEchelonState(echelon) {
@@ -1041,3 +1196,69 @@ function saveMapAsScreenshot() {
 
 // Привязка к кнопке
 document.getElementById('btnSaveImage').addEventListener('click', saveMapAsScreenshot);
+
+
+/* UI wiring for room panel */
+document.addEventListener('DOMContentLoaded', ()=>{
+  // toggle panel
+  const panel = document.getElementById('room-panel');
+  const toggle = document.getElementById('room-toggle');
+  toggle.addEventListener('click', ()=>{
+    panel.classList.toggle('collapsed');
+    toggle.textContent = panel.classList.contains('collapsed') ? 'Rooms ⌄' : 'Rooms ⌃';
+  });
+
+  // buttons
+  const btnCreate = document.getElementById('btnCreateRoom');
+  const newRoomName = document.getElementById('newRoomName');
+  const nickInput = document.getElementById('nickInput');
+  const roomsList = document.getElementById('roomsList');
+  const btnRefresh = document.getElementById('btnRefreshRooms');
+  const btnLeave = document.getElementById('btnLeaveRoom');
+
+  async function refreshRooms(){
+    roomsList.innerHTML = 'Загрузка...';
+    try{
+      const rooms = await listRooms();
+      if(!rooms || rooms.length===0){ roomsList.innerHTML = '<div>Нет комнат</div>'; return; }
+      roomsList.innerHTML = '';
+      rooms.forEach(r=>{
+        const el = document.createElement('div');
+        el.className = 'room-item';
+        el.style.display='flex';
+        el.style.justifyContent='space-between';
+        el.style.alignItems='center';
+        el.style.padding='6px';
+        el.style.borderBottom='1px solid #eee';
+        el.innerHTML = '<span style=\"font-size:13px\">'+(r.name||r.id)+'</span>';
+        const joinBtn = document.createElement('button');
+        joinBtn.textContent = 'Войти';
+        joinBtn.addEventListener('click', async ()=>{
+          const nick = nickInput.value.trim() || ('User'+Math.floor(Math.random()*9999));
+          await joinRoom(r.id, nick);
+          btnLeave.style.display = 'inline-block';
+        });
+        el.appendChild(joinBtn);
+        roomsList.appendChild(el);
+      });
+    }catch(e){ roomsList.innerHTML = 'Ошибка загрузки'; console.error(e); }
+  }
+  btnRefresh.addEventListener('click', refreshRooms);
+  refreshRooms();
+
+  btnCreate.addEventListener('click', async ()=>{
+    const name = newRoomName.value.trim() || ('room-'+Math.floor(Math.random()*10000));
+    const nick = nickInput.value.trim() || ('User'+Math.floor(Math.random()*9999));
+    try{
+      const room = await createRoom(name);
+      await joinRoom(room.id, nick);
+      btnLeave.style.display = 'inline-block';
+      refreshRooms();
+    }catch(e){ alert('Ошибка создания комнаты: '+e.message); console.error(e); }
+  });
+
+  btnLeave.addEventListener('click', ()=>{
+    leaveRoom();
+    btnLeave.style.display = 'none';
+  });
+});

@@ -10,24 +10,37 @@
   <link rel="stylesheet" href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css" />
 
   <link rel="stylesheet" href="style.css" />
+
+  <!-- Supabase client -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 </head>
 <body>
 
-<!-- START: Rooms UI (added) -->
-<div id="rooms-overlay" style="position:fixed;top:12px; left:50%; transform:translateX(-50%);z-index:9999;background:rgba(255,255,255,0.95);border:1px solid #ccc;padding:12px;border-radius:8px;max-width:320px;font-family:inherit;">
-  <h3 style="margin:0 0 8px 0;font-size:16px;">Комнаты (Together)</h3>
-  <div id="rooms-list" style="max-height:220px;overflow:auto;margin-bottom:8px;"></div>
-  <button id="btn-show-create" style="display:inline-block;margin-bottom:8px;">Создать комнату</button>
-  <div id="create-form" style="display:none;margin-top:8px;">
-    <input id="room-name" placeholder="Название комнаты" style="width:100%;box-sizing:border-box;margin-bottom:6px;" />
-    <input id="room-pass" placeholder="Пароль (опционально)" style="width:100%;box-sizing:border-box;margin-bottom:6px;" />
-<button id="btn-create-room">Создать и получить ссылку</button>
-    <button id="btn-cancel-create" style="margin-left:6px;">Отмена</button>
-    <div id="create-error" style="color:red;margin-top:6px;"></div>
+  <!-- ROOM PANEL (Supabase multiplayer) -->
+  <div id="room-panel" class="room-panel collapsed" aria-hidden="false">
+    <button id="room-toggle" class="room-toggle" title="Rooms">Rooms ⌄</button>
+    <div class="room-content">
+      <div class="room-row">
+        <label for="nickInput">Никнейм</label>
+        <input id="nickInput" placeholder="Введите ник (например, Вася)"/>
+      </div>
+      <div class="room-row">
+        <label for="newRoomName">Создать комнату</label>
+        <input id="newRoomName" placeholder="Название новой комнаты"/>
+        <button id="btnCreateRoom">Создать</button>
+      </div>
+      <div class="room-row">
+        <label>Список комнат</label>
+        <div id="roomsList" class="rooms-list">Загрузка...</div>
+        <button id="btnRefreshRooms">Обновить</button>
+      </div>
+      <div class="room-row">
+        <button id="btnLeaveRoom" style="display:none;">Выйти из комнаты</button>
+      </div>
+      <div class="room-status" id="roomStatus">Не в комнате</div>
+    </div>
   </div>
-  <div id="room-link" style="word-break:break-all;display:none;margin-top:8px;"></div>
-  </div>
-<!-- END: Rooms UI -->
+  <!-- END ROOM PANEL -->
 
   <div class="app">
     <aside class="sidebar">
@@ -104,10 +117,5 @@
 
 
   <script src="script.js"></script>
-
-<!-- TogetherJS (magic link rooms) -->
-<script src="https://unpkg.com/peerjs@1.4.7/dist/peerjs.min.js"></script>
-  <script src="realtime.js"></script>
-
 </body>
 </html>
