@@ -142,7 +142,7 @@ async function applyRoomState(state){
 /* Build plan from current local echelonStates */
 function buildCurrentPlan(){
   const plan = {
-    meta: { createdAt: new Date().toISOString(), mapFile: currentMapFile || null, echelonCount: ECHELON_COUNT },
+    meta: { createdAt: new Date().toISOString(), mapFile: currentMapFile || plan?.meta?.mapFile || null, echelonCount: ECHELON_COUNT },
     echelons: {},
     mapState: { center: (map && map.getCenter) ? map.getCenter() : null, zoom: (map && map.getZoom) ? map.getZoom() : null }
   };
