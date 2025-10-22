@@ -111,12 +111,17 @@ async function applyRoomState(state){
   _suppressRemoteLoad = true;
   try{
     console.log('[Supabase] Applying room state, meta:', state.meta || {});
-    // load mapFile if present
     const mapFile = state.meta && state.meta.mapFile ? state.meta.mapFile : (state.mapFile || null);
+
+    // 1) СНАЧАЛА очистим объекты (но карта уже не будет обнуляться, т.к. ты убрал currentMapFile = null)
+    try{ clearMapAll(); } catch(e){ console.warn('applyRoomState clearMapAll error', e); }
+
+    // 2) ПОТОМ загрузим карту снова
     if(mapFile){
       try{ await loadMapByFile(mapFile); } catch(e){ console.warn('applyRoomState: loadMapByFile failed', e); }
     }
-    // restore echelons
+
+    // 3) Восстановим эшелоны
     for(let e=1;e<= (state.meta && state.meta.echelonCount ? state.meta.echelonCount : ECHELON_COUNT); e++){
       const s = (state.echelons && state.echelons[e]) ? state.echelons[e] : { markers:[], simple:[], drawings:[] };
       echelonStates[e] = {
@@ -125,12 +130,11 @@ async function applyRoomState(state){
         drawings: s.drawings || []
       };
     }
-    // set current echelon and reload map objects
     if(typeof currentEchelon === 'undefined') currentEchelon = 1;
     if(!echelonStates[currentEchelon]) currentEchelon = 1;
-    try{ clearMapAll(); } catch(e){ console.warn('applyRoomState clearMapAll error', e); }
     loadEchelonState(currentEchelon);
-    // restore map view
+
+    // 4) Восстанавливаем положение карты
     if(state.mapState && state.mapState.center && typeof state.mapState.zoom !== 'undefined'){
       try{ map.setView(state.mapState.center, state.mapState.zoom); } catch(e){ console.warn('applyRoomState setView error', e); }
     }
