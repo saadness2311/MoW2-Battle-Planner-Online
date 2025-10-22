@@ -7,12 +7,12 @@
 function clearMapAll(){
   try{
     // remove drawn shapes
-    if(typeof drawnItems !== 'undefined' && drawnItems && drawnItems.clearLayers) drawnItems.clearLayers();
+    if(typeof drawnItems !== 'undefined' && drawnItems && drawnItems.clearLayers) drawnItems.clearLayers(); try{ autoSave(); }catch(e){};
   } catch(e){ console.warn('clearMapAll drawnItems error', e); }
   try{
     if(typeof markerList !== 'undefined' && Array.isArray(markerList)){
       markerList.forEach(m=>{ try{ if(m && m.marker) map.removeLayer(m.marker); }catch(e){} });
-      markerList = [];
+      markerList = []; try{ autoSave(); }catch(e){};
     }
   } catch(e){ console.warn('clearMapAll markerList error', e); }
   try{
@@ -132,10 +132,7 @@ function subscribeToRoom(roomId){
 }
 
 /* joinRoom now loads from room_states and subscribes */
-async function joinRoom(roomId, nick){
-  if(!supabaseClient) throw new Error('Supabase not initialized');
-  currentRoomId = roomId;
-  currentNick = nick;
+async function joinRoom(roomId, nick){ if(!supabaseClient) throw new Error('Supabase not initialized'); if(currentRoomId && currentRoomId !== roomId){ try{ await saveRoomState(); }catch(e){ console.warn('save previous room failed', e); } } currentRoomId = roomId; currentNick = nick;
   updateRoomUI();
   const rs = await loadRoomState(roomId);
   if(rs && rs.plan) await applyRoomState(rs.plan, rs.mapState);
@@ -144,8 +141,30 @@ async function joinRoom(roomId, nick){
 
 /* leave and delete room */
 function leaveRoom(){ currentRoomId = null; currentNick = null; unsubscribeRoom(); document.getElementById('roomStatus').textContent = 'Не в комнате'; document.getElementById('btnLeaveRoom').style.display='none'; }
-async function deleteRoom(roomId){ if(!supabaseClient) throw new Error('Supabase not initialized'); if(!confirm('Удалить комнату и все её данные?')) return; const { error } = await supabaseClient.from('rooms').delete().eq('id', roomId); if(error){ alert('Ошибка удаления: '+(error.message||error)); } else { unsubscribeRoom(); if(currentRoomId==roomId) leaveRoom(); try{ document.getElementById('btnRefreshRooms').click(); }catch(e){} } }
+async function deleteRoom(roomId){ if(!supabaseClient) throw new Error('Supabase not initialized'); if(!confirm('Удалить комнату и все её данные?')) return; const { error } = await supabaseClient.from('rooms').delete().eq('id', roomId); if(error){ alert('Ошибка удаления: '+(error.message||error)); } else { unsubscribeRoom(); if(currentRoomId==roomId) await leaveRoom(); try{ document.getElementById('btnRefreshRooms').click(); }catch(e){} } }
 /* --- Supabase multiplayer integration END --- */
+
+/* --- Autosave / debounce wiring --- */
+function debounce(fn, delay){
+  let t;
+  return function(...args){
+    if(t) clearTimeout(t);
+    t = setTimeout(()=> {
+      try { fn.apply(this, args); } catch(e){ console.error('debounce fn error', e); }
+    }, delay);
+  };
+}
+
+// autoSave triggers saveRoomState but respects _suppressRemoteLoad to avoid loops
+const autoSave = debounce(async function(){
+  try{
+    if(_suppressRemoteLoad) return;
+    if(!currentRoomId) return;
+    if(!supabaseClient) return;
+    await saveRoomState();
+  }catch(e){ console.error('autoSave error', e); }
+}, 600);
+
 
 
 // ------------ Конфигурация ------------
@@ -475,6 +494,12 @@ map.on(L.Draw.Event.CREATED, function (e) {
     // circle has options.radius already
     // ensure stroke color/weight set
     layer.setStyle && layer.setStyle({ color: getDrawColor(), weight: getDrawWeight() });
+
+// Auto-save on draw events
+map.on('draw:created', function(e){ try{ autoSave(); }catch(e){console.error(e);} });
+map.on('draw:edited', function(e){ try{ autoSave(); }catch(e){console.error(e);} });
+map.on('draw:deleted', function(e){ try{ autoSave(); }catch(e){console.error(e);} });
+
   }
   drawnItems.addLayer(layer);
 });
@@ -609,14 +634,10 @@ function addSimpleSymbol(type, latlng) {
   marker._simpleType = type; // чтобы при сохранении/загрузке восстановить тип
 
   marker.on('click', () => {
-    if(confirm('Удалить этот символ?')){
-      map.removeLayer(marker);
-      const idx = simpleMarkers.indexOf(marker);
-      if(idx!==-1) simpleMarkers.splice(idx,1);
-    }
+    if(confirm('Удалить этот символ?')){ map.removeLayer(marker); const idx = simpleMarkers.indexOf(marker); if(idx!==-1) simpleMarkers.splice(idx,1); try{ autoSave(); }catch(e){} }
   });
 
-  return marker;
+  try{ autoSave(); }catch(e){}; try{ autoSave(); }catch(e){}; return marker;
 }
 
 function addCustomIcon(url, latlng) {
@@ -648,14 +669,10 @@ function addCustomIcon(url, latlng) {
   } catch (e) { console.warn('tooltip bind error', e); }
 
   marker.on('click', () => {
-    if (confirm('Удалить этот символ?')) {
-      map.removeLayer(marker);
-      const idx = simpleMarkers.indexOf(marker);
-      if (idx !== -1) simpleMarkers.splice(idx, 1);
-    }
+    if (confirm('Удалить этот символ?')) { map.removeLayer(marker); const idx = simpleMarkers.indexOf(marker); if (idx !== -1) simpleMarkers.splice(idx, 1); try{ autoSave(); }catch(e){} }
   });
 
-  return marker;
+  try{ autoSave(); }catch(e){}; return marker;
 }
 
 //------------ Заполнение списка карт автоматически ------------
@@ -822,12 +839,12 @@ function placeMarker(nick, nation, regimentFile, team, playerIndex){
   const marker = L.marker(pos, { icon, draggable: true }).addTo(map);
 
   // не добавляем tooltip (как ты попросил удалить)
-  marker.on('dragend', ()=> {
-    // можно отлавливать новые координаты при необходимости
-  });
+  marker.on('dragend', ()=> { try{ autoSave(); }catch(e){console.error(e);} });
 
   const entry = { id, team, playerIndex, nick, nation, regimentFile, marker };
   markerList.push(entry);
+  try{ autoSave(); }catch(e){}
+
 }
 
 //------------ Кнопки готовых символов ------------
@@ -928,10 +945,7 @@ function loadEchelonState(echelon) {
 }
 
 //------------ Ластик и очистка ------------
-$id('btnEraser').addEventListener('click', ()=>{
-  if(!confirm('Удалить ВСЕ рисунки на карте?')) return;
-  drawnItems.clearLayers();
-});
+$id('btnEraser').addEventListener('click', ()=>{ if(!confirm('Удалить ВСЕ рисунки на карте?')) return; drawnItems.clearLayers(); try{ autoSave(); }catch(e){}; });
 
 $id('btnClearAll').addEventListener('click', ()=>{
   if(!confirm('Очистить карту полностью? (иконки и рисунки)')) return;
@@ -1254,10 +1268,7 @@ document.addEventListener('DOMContentLoaded', ()=>{
     }catch(e){ alert('Ошибка создания комнаты: '+e.message); console.error(e); }
   });
 
-  btnLeave.addEventListener('click', ()=>{
-    leaveRoom();
-    btnLeave.style.display = 'none';
-  });
+  btnLeave.addEventListener('click', async ()=>{ await await leaveRoom(); btnLeave.style.display = 'none'; });
 });
 
 //заглушка комнат ui
