@@ -23,11 +23,11 @@ function clearMapAll(){
   } catch(e){ console.warn('clearMapAll simpleMarkers error', e); }
   try{
     if(typeof imageOverlay !== 'undefined' && imageOverlay){
-      try{ map.removeLayer(imageOverlay); }catch(e){};
-      imageOverlay = null;
-      imageBounds = null;
-      currentMapFile = null;
-    }
+  try{ map.removeLayer(imageOverlay); }catch(e){};
+  imageOverlay = null;
+  imageBounds = null;
+  // ⚠️ НЕ СБРАСЫВАЕМ currentMapFile!
+}
   } catch(e){ console.warn('clearMapAll imageOverlay error', e); }
 }
 
