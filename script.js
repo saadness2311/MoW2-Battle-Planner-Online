@@ -1320,162 +1320,105 @@ document.addEventListener('DOMContentLoaded', function(){
 // Вставь этот блок в конец script.js
 
 (function(){
-  // Убедимся, что кнопка существует в DOM — если нет, создадим
-  function ensureDeleteButtonInDOM(){
-    let btn = document.getElementById('btnDeleteRoom');
-    if(!btn){
-      // создаём кнопку в панели (ищем room-panel)
+  try{
+    // Удалим старую сломанную кнопку и её обработчики (если есть)
+    const old = document.getElementById('btnDeleteRoom');
+    if(old){
+      // клон без обработчиков
+      const clone = old.cloneNode(false);
+      old.parentNode && old.parentNode.replaceChild(clone, old);
+      clone.remove(); // убираем клон (мы создадим новый чистый ниже)
+    }
+
+    // Создаём чистую кнопку
+    function createDeleteButton(){
+      let btn = document.getElementById('btnDeleteRoom');
+      if(btn) return btn;
       const panel = document.getElementById('room-panel') || document.body;
+      const content = panel.querySelector('.room-content') || panel;
       const row = document.createElement('div');
       row.className = 'room-row';
       btn = document.createElement('button');
       btn.id = 'btnDeleteRoom';
+      btn.type = 'button';
       btn.textContent = 'Удалить комнату';
       btn.style.display = 'none';
       btn.style.marginLeft = '8px';
       row.appendChild(btn);
-      // попробуем добавить в .room-content если есть
-      const content = panel.querySelector('.room-content');
-      if(content){
-        content.appendChild(row);
-      } else {
-        panel.appendChild(row);
-      }
+      content.appendChild(row);
+      return btn;
     }
-    return btn;
-  }
 
-  const btnDelete = ensureDeleteButtonInDOM();
+    const btn = createDeleteButton();
 
-  // Асинхронная функция удаления текущей комнаты
-  async function handleDeleteCurrentRoom(){
-    try{
-      if(!currentRoomId){
-        alert('Вы не в комнате — нечего удалять.');
-        return;
-      }
-      if(!confirm('Удалить комнату и все её данные? Это действие необратимо.')){
-        return;
-      }
+    // Уберём все старые слушатели — заменим элемент на клон, затем заново создадим привязку
+    const safeBtn = btn.cloneNode(true);
+    btn.parentNode.replaceChild(safeBtn, btn);
 
-      const rid = Number(currentRoomId);
-      if(Number.isNaN(rid)){
-        alert('Неверный id комнаты: ' + currentRoomId);
-        return;
-      }
-
-      // Удаляем сначала состояние комнаты (если есть) — это безопасно даже при cascade
+    // Асинхронный обработчик удаления комнаты (использует уже существующую deleteRoom)
+    safeBtn.addEventListener('click', async function(ev){
+      ev.preventDefault();
       try{
-        if(typeof supabaseClient !== 'undefined' && supabaseClient){
-          console.log('[DeleteRoom] deleting room_states for', rid);
-          const { error: err1 } = await supabaseClient.from('room_states').delete().eq('room_id', rid);
-          if(err1) console.warn('[DeleteRoom] error deleting room_states (ignored):', err1);
+        if(typeof deleteRoom === 'function'){
+          await deleteRoom(currentRoomId);
+        } else {
+          // Если deleteRoom нет, делаем низкоуровневый вызов Supabase (fallback)
+          if(!window.supabaseClient){
+            alert('Удаление невозможно: supabaseClient не найден.');
+            return;
+          }
+          if(!currentRoomId){
+            alert('Не в комнате — нечего удалять.');
+            return;
+          }
+          if(!confirm('Удалить комнату и все её данные?')) return;
+          const rid = Number(currentRoomId);
+          await supabaseClient.from('room_states').delete().eq('room_id', rid);
+          await supabaseClient.from('rooms').delete().eq('id', rid);
+          // безопасный leave
+          if(typeof leaveRoom === 'function') await leaveRoom();
+          // обновим список комнат, если есть такая кнопка/функция
+          try{ document.getElementById('btnRefreshRooms')?.click(); }catch(e){}
+          alert('Комната удалена (fallback).');
         }
       }catch(e){
-        console.warn('Error deleting room_states (ignored):', e);
+        console.error('Ошибка при удалении комнаты (handler):', e);
+        alert('Ошибка при удалении комнаты: ' + (e?.message || e));
       }
+    });
 
-      // Удаляем саму комнату
-      if(!supabaseClient) {
-        alert('Supabase не инициализирован, удаление невозможно.');
-        return;
-      }
-      console.log('[DeleteRoom] deleting room', rid);
-      const { data, error } = await supabaseClient.from('rooms').delete().eq('id', rid);
-      if(error){
-        console.error('[DeleteRoom] supabase error:', error);
-        alert('Ошибка удаления комнаты: ' + (error.message || JSON.stringify(error)));
-        return;
-      }
-      console.log('[DeleteRoom] success', data);
-
-      // Если мы в этой комнате — покидаем её
-      if(String(currentRoomId) === String(rid) || Number(currentRoomId) === rid){
-        try{
-          // leaveRoom может быть async — вызываем безопасно
-          if(typeof leaveRoom === 'function'){
-            await leaveRoom();
-          } else {
-            currentRoomId = null;
-            currentNick = null;
-            if(typeof unsubscribeRoom === 'function') unsubscribeRoom();
-            const statusEl = document.getElementById('roomStatus');
-            if(statusEl) statusEl.textContent = 'Не в комнате';
-          }
-        }catch(e){ console.warn('leaveRoom after delete failed', e); }
-      }
-
-      // Обновим список комнат UI (если есть кнопка обновления)
+    // Простая и надёжная реализация updateRoomUI (перезаписывает любую проблемную)
+    window.updateRoomUI = function(){
       try{
-        const refresh = document.getElementById('btnRefreshRooms');
-        if(refresh) refresh.click();
-        else if(typeof listRooms === 'function'){
-          // если есть функция, вызовем её и обновим #roomsList
-          const rooms = await listRooms();
-          const listEl = document.getElementById('roomsList');
-          if(listEl){
-            listEl.innerHTML = rooms.map(r=>`<div class="room-item" data-id="${r.id}">${r.name || 'room '+r.id}</div>`).join('') || 'Нет комнат';
+        const statusEl = document.getElementById('roomStatus');
+        const leaveBtn = document.getElementById('btnLeaveRoom');
+        const deleteBtn = document.getElementById('btnDeleteRoom');
+        // Статус
+        if(statusEl){
+          if(currentRoomId){
+            statusEl.textContent = 'В комнате: ' + (currentNick || '(ник не задан)');
+          } else {
+            statusEl.textContent = 'Не в комнате';
           }
         }
-      }catch(e){ console.warn('refresh rooms UI failed', e); }
+        // Кнопка Выйти
+        if(leaveBtn){
+          leaveBtn.style.display = currentRoomId ? 'inline-block' : 'none';
+        }
+        // Кнопка Удалить (показываем всем, как ты просил)
+        if(deleteBtn){
+          deleteBtn.style.display = currentRoomId ? 'inline-block' : 'none';
+        }
+      }catch(e){ console.warn('updateRoomUI fallback error', e); }
+    };
 
-      alert('Комната удалена.');
-    }catch(e){
-      console.error('handleDeleteCurrentRoom exception', e);
-      alert('Ошибка при удалении комнаты: ' + (e && e.message ? e.message : e));
-    }
-  }
+    // Вызовем сразу, чтобы UI обновился
+    try{ updateRoomUI(); }catch(e){ console.warn(e); }
 
-  // Повесим обработчик
-  btnDelete.addEventListener('click', function(ev){
-    ev.preventDefault();
-    handleDeleteCurrentRoom();
-  });
-
-  // Показываем/скрываем кнопку через updateRoomUI, если есть такая функция — дополняем её.
-  // Если updateRoomUI не определена, создадим простую реализацию.
-  function ensureUpdateRoomUI(){
-    if(typeof updateRoomUI === 'function'){
-      // расширим её: запомним старую, и сделаем обёртку
-      if(!updateRoomUI.__wrapped_with_delete){
-        const orig = updateRoomUI;
-        updateRoomUI = function(){
-          try{ orig.apply(this, arguments); }catch(e){ console.warn('orig updateRoomUI error', e); }
-          // после оригинального обновления — показываем кнопку если есть комната
-          try{
-            const btn = ensureDeleteButtonInDOM();
-            if(currentRoomId) btn.style.display = 'inline-block'; else btn.style.display = 'none';
-          }catch(e){ console.warn('updateRoomUI show delete button error', e); }
-        };
-        updateRoomUI.__wrapped_with_delete = true;
-      }
-    } else {
-      // простая реализация, будет вызываться где надо
-      window.updateRoomUI = function(){
-        try{
-          const btn = ensureDeleteButtonInDOM();
-          if(currentRoomId) btn.style.display = 'inline-block'; else btn.style.display = 'none';
-          const statusEl = document.getElementById('roomStatus');
-          if(statusEl) statusEl.textContent = currentRoomId ? ('В комнате: ' + (currentNick || '')) : 'Не в комнате';
-        }catch(e){ console.warn('fallback updateRoomUI error', e); }
-      };
-      window.updateRoomUI.__wrapped_with_delete = true;
-    }
-  }
-
-  // Инициализация после DOM
-  document.addEventListener('DOMContentLoaded', function(){
-    ensureDeleteButtonInDOM();
-    ensureUpdateRoomUI();
-    // initial call
-    try{ updateRoomUI(); }catch(e){}
-  });
-
-  // Также обновим отображение, если currentRoomId меняется напрямую в коде - можно наблюдать за элементом статуса:
-  var statusEl = document.getElementById('roomStatus');
-  if(statusEl){
-    // простейший observer: при изменении текста — обновляем видимость
-    const obs = new MutationObserver(function(){ try{ updateRoomUI(); }catch(e){} });
-    obs.observe(statusEl, { childList: true, subtree: true });
+    console.log('Фикс: кнопка удаления восстановлена и updateRoomUI перезаписан(а).');
+    alert('Фикс применён: кнопка "Удалить комнату" восстановлена. Проверьте её работу.');
+  }catch(err){
+    console.error('Fatal fix error:', err);
+    alert('Не удалось применить быстрый фикс: ' + (err && err.message));
   }
 })();
