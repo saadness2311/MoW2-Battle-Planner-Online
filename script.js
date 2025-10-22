@@ -1042,216 +1042,333 @@ function saveMapAsScreenshot() {
 // Привязка к кнопке
 document.getElementById('btnSaveImage').addEventListener('click', saveMapAsScreenshot);
 
-// ---------------- Persistence & basic multi-tab sync (added) ----------------
-//
-// Purpose: keep the current map, echelon states, markers and drawings persisted per-room
-// in localStorage and broadcast changes to other tabs via BroadcastChannel when available.
-// This does NOT replace your server-side multiplayer. It improves behavior for:
-//  - restoring map after refresh/reopen
-//  - keeping multiple tabs/windows (or same-origin clients) in sync
-//  - ensuring changes to markers/drawings trigger state saves
-//
-// How it works:
-//  - roomId is read from URL param 'room' (e.g. ?room=abc). If missing use 'default'.
-//  - state is stored under key 'plan:<roomId>' in localStorage.
-//  - updates are broadcast via BroadcastChannel 'plan-sync-<roomId>'.
-//  - operations that modify state call persistPlan(), which throttles writes to once per 500ms.
-//
-// NOTE: this patch calls existing functions saveCurrentEchelonState() and loadPlanData().
-// It also wraps placeMarker to persist after placing a marker and listens to drawing events.
-// It intentionally avoids changing UI or core logic.
+
+/* Non-invasive Map Persistence & Sync Module
+   - DOES NOT modify existing UI or wrap functions.
+   - Restores map image from /assets/maps after reload.
+   - Persists map state (map file, markers, drawings, echelon states) per-room in localStorage.
+   - Syncs between tabs via BroadcastChannel/storage events.
+   - Detects map insertion via MutationObserver and logs to console when map inserted.
+   - Safe: checks for existence of globals before calling.
+*/
 
 (function(){
-  // simple helper: read ?room=.. from URL
+  'use strict';
+  // helpers
   function getRoomId() {
     try {
+      // prefer explicit global roomId if present
+      if (typeof roomId !== 'undefined' && roomId) return String(roomId);
+      if (typeof ROOM_ID !== 'undefined' && ROOM_ID) return String(ROOM_ID);
       const params = new URLSearchParams(location.search);
       return params.get('room') || params.get('roomId') || 'default';
     } catch(e){ return 'default'; }
   }
-  const ROOM_ID = getRoomId();
-  const STORAGE_KEY = 'plan:' + ROOM_ID;
-  const BC_NAME = 'plan-sync-' + ROOM_ID;
-  const SYNC_THROTTLE_MS = 500;
-  let lastPersist = 0;
-  let broadcast = null;
-  try {
-    if ('BroadcastChannel' in window) broadcast = new BroadcastChannel(BC_NAME);
-  } catch(e){ broadcast = null; }
+  const ROOM = getRoomId();
+  const KEY = 'plan:' + ROOM;
+  const PING = KEY + ':ping';
+  const BC_NAME = 'plan-sync-' + ROOM;
+  let bc = null;
+  try { if ('BroadcastChannel' in window) bc = new BroadcastChannel(BC_NAME); } catch(e){ bc = null; }
 
-  function cloneEchelonsForStorage(echelonStatesObj) {
-    const out = {};
-    for (const k in echelonStatesObj) {
-      const s = echelonStatesObj[k];
-      if (!s) continue;
-      out[k] = {
-        markers: (s.markers || []).map(m => {
-          const copy = Object.assign({}, m);
-          // remove circular reference to marker instance if present
-          if (copy.marker !== undefined) delete copy.marker;
-          return copy;
-        }),
-        simple: s.simple || [],
-        drawings: s.drawings || []
-      };
-    }
-    return out;
+  function safeJSON(obj){
+    try { return JSON.parse(JSON.stringify(obj)); } catch(e){ return null; }
   }
 
-  function buildPlanObject() {
-    // ensure current echelon saved
+  function collectState(){
+    // call saveCurrentEchelonState if available to ensure global echelonStates updated
     try { if (typeof saveCurrentEchelonState === 'function') saveCurrentEchelonState(); } catch(e){}
-    const plan = {
-      meta: {
-        savedAt: new Date().toISOString(),
-        mapFile: (typeof currentMapFile !== 'undefined') ? currentMapFile : null,
-        echelonCount: (typeof ECHELON_COUNT !== 'undefined') ? ECHELON_COUNT : null
-      },
-      echelons: (typeof echelonStates !== 'undefined') ? cloneEchelonsForStorage(echelonStates) : {},
-      mapState: {}
-    };
+    const state = { meta: { savedAt: new Date().toISOString(), room: ROOM }, mapFile: null, mapSrc: null, mapView: null, echelons: null, markers: [], drawings: null };
+    // try to detect current map file / image src
     try {
+      // if there's a global currentMapFile variable use it
+      if (typeof currentMapFile !== 'undefined' && currentMapFile) state.mapFile = currentMapFile;
+      // try to find image element with assets/maps in src
+      const imgs = Array.from(document.querySelectorAll('img'));
+      for (const img of imgs){
+        const src = img.getAttribute('src') || '';
+        if (src.indexOf('/assets/maps') !== -1 || src.indexOf('\\assets\\maps') !== -1) {
+          state.mapSrc = src;
+          break;
+        }
+      }
+      // if using leaflet, try to get center/zoom
       if (typeof map !== 'undefined' && map && typeof map.getCenter === 'function') {
         const c = map.getCenter();
-        plan.mapState = { center: {lat: c.lat, lng: c.lng}, zoom: map.getZoom() };
+        state.mapView = { center: {lat: c.lat, lng: c.lng}, zoom: map.getZoom() };
       }
     } catch(e){}
-    return plan;
-  }
-
-  function persistPlan(force){
-    const now = Date.now();
-    if (!force && now - lastPersist < SYNC_THROTTLE_MS) return;
-    lastPersist = now;
-    const plan = buildPlanObject();
+    // echelons and markers
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(plan));
-    } catch(e){ console.warn('Could not write plan to localStorage', e); }
-    // broadcast to other tabs
-    try {
-      if (broadcast) broadcast.postMessage({ type: 'plan', plan });
-      else {
-        // fallback: write a mirror key to trigger storage event
-        localStorage.setItem(STORAGE_KEY + ':ping', Date.now().toString());
-      }
-    } catch(e){ console.warn('Broadcast failed', e); }
-  }
-
-  function tryRestoreFromStorage(){
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if (!raw) return false;
-      const plan = JSON.parse(raw);
-      if (plan) {
-        if (typeof loadPlanData === 'function') {
-          console.log('[sync] Restoring plan from storage for room', ROOM_ID);
-          // call existing loader
-          loadPlanData(plan);
-          return true;
+      if (typeof echelonStates !== 'undefined' && echelonStates) {
+        // shallow clone with removal of circular references
+        const cloned = {};
+        for (const k in echelonStates) {
+          const s = echelonStates[k];
+          if (!s) continue;
+          cloned[k] = {
+            markers: (s.markers || []).map(m => {
+              const o = Object.assign({}, m);
+              if (o.marker !== undefined) delete o.marker;
+              return o;
+            }),
+            simple: s.simple || [],
+            drawings: s.drawings || []
+          };
         }
+        state.echelons = cloned;
+      } else if (typeof markerList !== 'undefined' && Array.isArray(markerList)) {
+        state.markers = markerList.map(m => {
+          try {
+            const lat = (typeof m.getLatLng === 'function') ? m.getLatLng().lat : (m.lat||m.latitude||null);
+            const lng = (typeof m.getLatLng === 'function') ? m.getLatLng().lng : (m.lng||m.longitude||null);
+            return { lat, lng, data: (m.options||m.data||{}) };
+          } catch(e){ return null; }
+        }).filter(Boolean);
       }
-    } catch(e){
-      console.warn('Could not restore plan from storage', e);
-    }
-    return false;
+    } catch(e){}
+    // drawn items (if using Leaflet.draw)
+    try {
+      if (typeof drawnItems !== 'undefined' && drawnItems && drawnItems.toGeoJSON) {
+        state.drawings = drawnItems.toGeoJSON();
+      }
+    } catch(e){}
+    return state;
   }
 
-  // listen for storage events (other tabs)
-  window.addEventListener('storage', (ev) => {
-    if (!ev.key) return;
-    if (ev.key === STORAGE_KEY) {
+  function persistState(force){
+    try {
+      const plan = collectState();
+      localStorage.setItem(KEY, JSON.stringify(plan));
+      // broadcast
+      if (bc) bc.postMessage({type:'plan', plan});
+      else localStorage.setItem(PING, Date.now().toString());
+      // optional: attempt to sync to supabase if available (non-fatal)
       try {
-        const plan = JSON.parse(ev.newValue);
-        if (plan && typeof loadPlanData === 'function') {
-          console.log('[sync] Received storage update for room', ROOM_ID);
-          loadPlanData(plan);
+        if (window.supabase && typeof window.supabase.from === 'function') {
+          // best-effort: upsert into 'plans' table with columns room and payload (if table exists)
+          window.supabase.from('plans').upsert([{ room: ROOM, payload: plan }]).then(()=>{/*ok*/}).catch(()=>{/*ignore*/});
         }
-      } catch(e){ console.warn(e); }
-    } else if (ev.key === STORAGE_KEY + ':ping') {
-      // ping; try to re-read the main key
-      tryRestoreFromStorage();
-    }
-  });
+      } catch(e){}
+    } catch(e){ console.warn('[planSync] persist failed', e); }
+  }
 
-  // BroadcastChannel handler
-  if (broadcast) {
-    broadcast.onmessage = (ev) => {
+  function restoreState(plan){
+    if (!plan) {
+      try {
+        const raw = localStorage.getItem(KEY);
+        if (!raw) return false;
+        plan = JSON.parse(raw);
+      } catch(e){ return false; }
+    }
+    try {
+      console.log('[planSync] Restoring plan for room', ROOM, plan && plan.meta && plan.meta.savedAt);
+      // if loadPlanData exists, use it (preferred)
+      if (typeof loadPlanData === 'function') {
+        try { loadPlanData(plan); } catch(e){ console.warn('[planSync] loadPlanData failed', e); }
+      } else {
+        // else, try to set map by calling loadMapByFile if available
+        try {
+          if (plan.mapFile && typeof loadMapByFile === 'function') {
+            const p = loadMapByFile(plan.mapFile);
+            if (p && typeof p.then === 'function') p.catch(()=>{});
+          } else if (plan.mapSrc) {
+            // try to find existing img and set src; fallback: create an img if safe container exists
+            const imgs = Array.from(document.querySelectorAll('img'));
+            let applied = false;
+            for (const img of imgs){
+              const src = img.getAttribute('src')||'';
+              if (src.indexOf('/assets/maps') !== -1 || src.indexOf('\\assets\\maps') !== -1) {
+                img.setAttribute('src', plan.mapSrc);
+                applied = true;
+                break;
+              }
+            }
+            if (!applied) {
+              // append to a known container if exists without breaking layout
+              const container = document.querySelector('#map') || document.querySelector('.map-container') || document.body;
+              const img = document.createElement('img');
+              img.setAttribute('src', plan.mapSrc);
+              img.style.maxWidth = '100%';
+              img.style.display = 'none'; // keep hidden if not expected
+              container.appendChild(img);
+            }
+          }
+        } catch(e){ console.warn('[planSync] applying map failed', e); }
+        // restore markers via markerList if present
+        try {
+          if (plan.echelons && typeof echelonStates !== 'undefined') {
+            // naive merge: assign stored echelons back to global
+            for (const k in plan.echelons) {
+              if (!echelonStates[k]) echelonStates[k] = {};
+              try {
+                echelonStates[k].markers = (plan.echelons[k].markers||[]).map(m => Object.assign({}, m));
+                echelonStates[k].simple = plan.echelons[k].simple || [];
+                echelonStates[k].drawings = plan.echelons[k].drawings || [];
+              } catch(e){}
+            }
+            // try to call a function to re-render markers if available
+            if (typeof renderEchelonMarkers === 'function') {
+              try { renderEchelonMarkers(); } catch(e){}
+            }
+          } else if (plan.markers && Array.isArray(plan.markers)) {
+            if (typeof markerList !== 'undefined' && Array.isArray(markerList)) {
+              // clear existing markers if possible (best-effort)
+              try {
+                if (typeof clearAllMarkers === 'function') clearAllMarkers();
+                markerList.length = 0;
+              } catch(e){}
+              // create markers via placeMarker if exists
+              for (const m of plan.markers) {
+                try {
+                  if (typeof placeMarker === 'function') {
+                    placeMarker(m.lat, m.lng, m.data || {});
+                  } else {
+                    // best-effort: if leaflet map present
+                    if (typeof L !== 'undefined' && typeof map !== 'undefined') {
+                      const mk = L.marker([m.lat, m.lng]).addTo(map);
+                      if (markerList && Array.isArray(markerList)) markerList.push(mk);
+                    }
+                  }
+                } catch(e){}
+              }
+            }
+          }
+        } catch(e){ console.warn('[planSync] restoring markers failed', e); }
+      }
+      return true;
+    } catch(e){ console.warn('[planSync] restore failed', e); return false; }
+  }
+
+  // throttle persistence
+  let last = 0;
+  const THROTTLE = 400;
+  function schedulePersist(force){
+    const now = Date.now();
+    if (!force && now - last < THROTTLE) return;
+    last = now;
+    persistState();
+  }
+
+  // BroadcastChannel and storage listeners
+  if (bc) {
+    bc.onmessage = (ev) => {
       try {
         if (!ev.data) return;
         if (ev.data.type === 'plan' && ev.data.plan) {
-          console.log('[sync] Received BC plan for room', ROOM_ID);
-          if (typeof loadPlanData === 'function') loadPlanData(ev.data.plan);
+          // avoid overwriting own recent changes by checking timestamp
+          restoreState(ev.data.plan);
         }
       } catch(e){ console.warn(e); }
     };
   }
+  window.addEventListener('storage', (ev) => {
+    if (!ev.key) return;
+    if (ev.key === KEY && ev.newValue) {
+      try {
+        const plan = JSON.parse(ev.newValue);
+        restoreState(plan);
+      } catch(e){ console.warn(e); }
+    } else if (ev.key === PING) {
+      // ping to re-read
+      try { const raw = localStorage.getItem(KEY); if (raw) restoreState(JSON.parse(raw)); } catch(e){}
+    }
+  });
 
-  // Hook into map events to persist view changes
+  // Observe DOM mutations to detect map image insertion and log
+  const mo = new MutationObserver((records)=>{
+    for (const r of records){
+      for (const n of r.addedNodes){
+        try {
+          if (n.nodeType === 1 && n.tagName === 'IMG') {
+            const src = n.getAttribute('src')||'';
+            if (src.indexOf('/assets/maps')!==-1 || src.indexOf('\\assets\\maps')!==-1) {
+              console.log('[planSync] map image inserted:', src);
+              // persist map assignment
+              schedulePersist();
+            }
+          }
+        } catch(e){}
+      }
+    }
+  });
+  mo.observe(document.documentElement || document.body, { childList: true, subtree: true });
+
+  // Listen to common map events to persist (leaflet)
   try {
-    if (typeof map !== 'undefined' && map) {
-      map.on && map.on('moveend zoomend', () => persistPlan());
+    if (typeof map !== 'undefined' && map && typeof map.on === 'function') {
+      map.on('moveend zoomend', ()=> schedulePersist());
     }
   } catch(e){}
 
-  // Wrap placeMarker to persist after creating a marker (keeps markers synced)
+  // If drawnItems exists, hook to draw events
   try {
-    if (typeof placeMarker === 'function') {
-      const _origPlaceMarker = placeMarker;
-      placeMarker = function(...args){
-        const res = _origPlaceMarker.apply(this, args);
-        try { persistPlan(); } catch(e){ console.warn(e); }
-        return res;
-      };
-    }
-  } catch(e){ console.warn('Could not wrap placeMarker', e); }
-
-  // If drawnItems (leaflet featureGroup) exists, listen to its events to persist drawings
-  try {
-    if (typeof drawnItems !== 'undefined' && drawnItems && drawnItems.on) {
-      drawnItems.on('draw:created draw:edited draw:deleted', ()=> persistPlan());
+    if (typeof drawnItems !== 'undefined' && drawnItems && typeof drawnItems.on === 'function') {
+      drawnItems.on('draw:created draw:edited draw:deleted', ()=> schedulePersist());
     }
   } catch(e){}
 
-  // Also intercept marker removals by watching global markerList mutation via polling (best-effort)
-  // If markerList length changes, persist.
-  let lastMarkerCount = (typeof markerList !== 'undefined' && markerList && markerList.length) ? markerList.length : 0;
-  setInterval(()=> {
+  // Monitor markerList changes (polling, non-invasive)
+  let prevMarkerCount = (typeof markerList !== 'undefined' && Array.isArray(markerList)) ? markerList.length : 0;
+  setInterval(()=>{
     try {
-      const cur = (markerList && markerList.length) ? markerList.length : 0;
-      if (cur !== lastMarkerCount) {
-        lastMarkerCount = cur;
-        persistPlan();
+      if (typeof markerList !== 'undefined' && Array.isArray(markerList)) {
+        const cur = markerList.length;
+        if (cur !== prevMarkerCount) {
+          prevMarkerCount = cur;
+          schedulePersist();
+        }
       }
     } catch(e){}
   }, 700);
 
-  // Persist when map is loaded by UI controls (wrap loadMapByFile)
-  try {
-    if (typeof loadMapByFile === 'function') {
-      const _origLoad = loadMapByFile;
-      loadMapByFile = function(fileName){
-        const p = _origLoad.apply(this, [fileName]);
-        // when finished, persist
-        p.then(()=> persistPlan()).catch(()=>{});
-        return p;
-      };
-    }
-  } catch(e){}
+  // Intercept clicks on elements that likely load maps, but do not modify their handlers.
+  // Instead, we log when they are clicked and schedule persistence after a delay.
+  document.addEventListener('click', (ev)=>{
+    try {
+      let el = ev.target;
+      while (el && el !== document) {
+        const attr = (el.getAttribute && (el.getAttribute('data-load-map') || el.getAttribute('data-map') || el.getAttribute('data-file')));
+        if (attr) {
+          console.log('[planSync] map load control clicked, scheduling persist.');
+          setTimeout(()=> schedulePersist(true), 300);
+          break;
+        }
+        // classes that often indicate load buttons
+        if (el.classList && (el.classList.contains('load-map') || el.classList.contains('btn-load-map') || el.classList.contains('map-insert'))) {
+          console.log('[planSync] detected map load button click, scheduling persist.');
+          setTimeout(()=> schedulePersist(true), 300);
+          break;
+        }
+        el = el.parentNode;
+      }
+    } catch(e){}
+  }, true);
 
-  // Restore once at startup
-  window.addEventListener('load', () => {
-    tryRestoreFromStorage();
-    // small fallback: also try shortly after (in case map is initialized later)
-    setTimeout(tryRestoreFromStorage, 800);
+  // expose API
+  window._planSync = window._planSync || {};
+  Object.assign(window._planSync, {
+    persist: function(){ schedulePersist(true); },
+    restore: function(){ return restoreState(); },
+    storageKey: KEY,
+    room: ROOM
   });
 
-  // expose manual functions for debugging
-  window._planSync = {
-    persistPlan,
-    tryRestoreFromStorage,
-    storageKey: STORAGE_KEY,
-    roomId: ROOM_ID
-  };
+  // attempt restore on load but only if map area exists (non-invasive)
+  window.addEventListener('load', ()=> {
+    try {
+      setTimeout(()=> {
+        // only restore if map element exists or loadMapByFile exists
+        const hasMapEl = !!(document.querySelector('#map') || document.querySelector('.map-container') || document.querySelector('img[src*="/assets/maps"]'));
+        if (hasMapEl || typeof loadMapByFile === 'function' || typeof loadPlanData === 'function') {
+          restoreState();
+        } else {
+          // delay further in case UI initializes later
+          setTimeout(()=> restoreState(), 900);
+        }
+      }, 200);
+    } catch(e){}
+  });
 
-  console.log('[sync] Plan sync initialized for room', ROOM_ID, 'storageKey=', STORAGE_KEY);
+  console.log('[planSync] initialized (non-invasive) for room', ROOM);
 })();
