@@ -1262,3 +1262,16 @@ document.addEventListener('DOMContentLoaded', ()=>{
     btnLeave.style.display = 'none';
   });
 });
+
+//заглушка комнат ui
+function updateRoomUI(){
+  const statusEl = document.getElementById('roomStatus');
+  const leaveBtn = document.getElementById('btnLeaveRoom');
+  if(currentRoomId){
+    statusEl.textContent = 'В комнате: ' + (currentNick || '???');
+    leaveBtn.style.display = 'inline-block';
+  } else {
+    statusEl.textContent = 'Не в комнате';
+    leaveBtn.style.display = 'none';
+  }
+}
