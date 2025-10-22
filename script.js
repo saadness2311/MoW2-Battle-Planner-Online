@@ -1,156 +1,124 @@
 // script.js
 
-/* --- Supabase multiplayer integration START --- */
-/* Replace these with your Supabase project URL and anon public key.
-   Instructions to fill these values are in README.md (search for SUPABASE_URL).
-*/
+
+
+/* --- Supabase multiplayer integration START (room_states) --- */
 const SUPABASE_URL = 'https://zqklzhipwiifrrbyentg.supabase.co';
 const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inpxa2x6aGlwd2lpZnJyYnllbnRnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjA5NzQ0ODYsImV4cCI6MjA3NjU1MDQ4Nn0.siMc2xCvoBEjwNVwaOVvjlOtDODs9yDo0IDyGl9uWso';
-
-/* Supabase client (will be available after including supabase script) */
 let supabaseClient = null;
-try {
-  if(typeof supabase !== 'undefined'){
-    supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
-  } else {
-    console.warn('Supabase script not found - real-time disabled until keys are provided and script loaded.');
-  }
-} catch(e){
-  console.error('Supabase init error', e);
-}
+try{ if(typeof supabase !== 'undefined') supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY); } catch(e){ console.error(e); }
 
-/* Room state */
-let currentRoomId = null;
-let currentNick = null;
-let _suppressRemoteLoad = false;
-let _lastLocalSave = 0;
+let currentRoomId = null, currentNick = null, _suppressRemoteLoad = false, _lastLocalSave = 0, _roomSubscription = null;
 
-/* Create a room (returns {id,name}) */
+/* createRoom/listRooms left as before - we keep using 'rooms' table for metadata */
 async function createRoom(name){
   if(!supabaseClient) throw new Error('Supabase client not initialized');
   const now = new Date().toISOString();
-  const payload = { name: name, state: {}, created_at: now, updated_at: now };
+  const payload = { name: name, owner: currentNick || null, created_at: now, updated_at: now };
   const { data, error } = await supabaseClient.from('rooms').insert(payload).select().limit(1);
   if(error) { console.error('createRoom error', error); throw error; }
   return data && data[0];
 }
-
-/* List rooms */
 async function listRooms(){
   if(!supabaseClient) return [];
-  const { data, error } = await supabaseClient.from('rooms').select('id,name,updated_at').order('updated_at', {ascending:false}).limit(100);
+  const { data, error } = await supabaseClient.from('rooms').select('id,name,updated_at').order('updated_at',{ascending:false}).limit(100);
   if(error){ console.error('listRooms error', error); return []; }
   return data || [];
 }
 
-/* Join a room by id, set nickname */
-async function joinRoom(roomId, nick){
-  if(!supabaseClient) throw new Error('Supabase not initialized');
-  currentRoomId = roomId;
-  currentNick = nick;
-  // fetch current state
-  const { data, error } = await supabaseClient.from('rooms').select('state').eq('id', roomId).single();
-  if(error){ console.error('joinRoom fetch error', error); }
-  if(data && data.state){
-    _suppressRemoteLoad = true;
-    try { loadFullRoomState(data.state); } catch(e){ console.error(e); }
-    _suppressRemoteLoad = false;
+/* loadRoomState: returns {plan,mapState} */
+async function loadRoomState(roomId){
+  if(!supabaseClient) return null;
+  const { data, error } = await supabaseClient.from('room_states').select('plan_json, map_state').eq('room_id', roomId).single();
+  if(error && error.code !== 'PGRST116'){ console.warn('loadRoomState error', error); }
+  if(data && data.plan_json) return { plan: data.plan_json, mapState: data.map_state };
+  // create initial
+  const initialPlan = { meta:{ createdAt: new Date().toISOString(), mapFile: currentMapFile || null, echelonCount: ECHELON_COUNT }, echelons:{}, mapState: { center: map.getCenter(), zoom: map.getZoom() } };
+  const payload = { room_id: roomId, plan_json: initialPlan, map_state: initialPlan.mapState, updated_at: new Date().toISOString() };
+  const { error: ins } = await supabaseClient.from('room_states').upsert(payload, { onConflict: 'room_id' });
+  if(ins) console.error('loadRoomState insert error', ins);
+  return { plan: initialPlan, mapState: initialPlan.mapState };
+}
+
+/* applyRoomState: loads map and applies echelonStates */
+async function applyRoomState(plan, mapState){
+  if(!plan) return;
+  _suppressRemoteLoad = true;
+  try{
+    const mapFile = plan.meta?.mapFile || null;
+    if(mapFile) { try{ await loadMapByFile(mapFile); } catch(e){ console.warn('map load failed', e); } }
+    // set echelons
+    for(let e=1;e<= (plan.meta?.echelonCount || ECHELON_COUNT); e++){
+      const s = plan.echelons?.[e] || { markers:[], simple:[], drawings:[] };
+      echelonStates[e] = { markers: (s.markers||[]).map(m=>({...m, marker:null})), simple: s.simple||[], drawings: s.drawings||[] };
+    }
+    currentEchelon = 1;
+    clearMapAll();
+    loadEchelonState(currentEchelon);
+    if(mapState && mapState.center) { try{ map.setView(mapState.center, mapState.zoom); } catch(e){} }
+  } finally {
+    setTimeout(()=>{ _suppressRemoteLoad = false; }, 200);
   }
-  // subscribe to room changes
-  subscribeToRoom(roomId);
-  updateRoomUI();
 }
 
-/* Leave room */
-function leaveRoom(){
-  currentRoomId = null;
-  currentNick = null;
-  unsubscribeRoom();
-  document.getElementById('roomStatus').textContent = 'Не в комнате';
-  document.getElementById('btnLeaveRoom').style.display = 'none';
-}
-
-/* Save room state (uploads entire echelonStates) */
+/* saveRoomState: builds plan and upserts into room_states */
 async function saveRoomState(){
   if(!supabaseClient || !currentRoomId) return;
-  try {
-    const now = new Date().toISOString();
-    const payload = { id: currentRoomId, state: echelonStates, updated_at: now, last_editor: currentNick || null };
-    // try update; if fails, upsert via insert...on conflict
-    const { error } = await supabaseClient.from('rooms').upsert(payload, {onConflict: 'id'});
+  try{
+    // ensure state saved locally
+    saveCurrentEchelonState();
+    const plan = { meta:{ createdAt: new Date().toISOString(), mapFile: currentMapFile || null, echelonCount: ECHELON_COUNT }, echelons:{}, mapState: { center: map.getCenter(), zoom: map.getZoom() } };
+    for(let e=1;e<=ECHELON_COUNT;e++){
+      const st = echelonStates[e] || { markers:[], simple:[], drawings:[] };
+      plan.echelons[e] = { markers: (st.markers||[]).map(m=>({ id:m.id, team:m.team, playerIndex:m.playerIndex, nick:m.nick, nation:m.nation, regimentFile:m.regimentFile, latlng: m.latlng || (m.marker && m.marker.getLatLng ? m.marker.getLatLng() : null) })), simple: st.simple||[], drawings: st.drawings||[] };
+    }
+    const payload = { room_id: currentRoomId, plan_json: plan, map_state: plan.mapState, updated_at: new Date().toISOString(), last_editor: currentNick || null };
+    const { error } = await supabaseClient.from('room_states').upsert(payload, { onConflict: 'room_id' });
     if(error) console.error('saveRoomState error', error);
     _lastLocalSave = Date.now();
-  } catch(e){ console.error('saveRoomState exception', e); }
+  }catch(e){ console.error(e); }
 }
 
-/* Subscribe to changes for a given room id */
-let _roomSubscription = null;
+/* realtime subscribe to room_states */
 function unsubscribeRoom(){
-  if(_roomSubscription){
-    try{ supabaseClient.removeChannel(_roomSubscription); }catch(e){/*ignore*/ }
+  if(_roomSubscription && supabaseClient){
+    try{ supabaseClient.removeChannel(_roomSubscription); }catch(e){};
     _roomSubscription = null;
   }
 }
 function subscribeToRoom(roomId){
   if(!supabaseClient) return;
   unsubscribeRoom();
-  try {
-    _roomSubscription = supabaseClient.channel('room-'+roomId)
-      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'rooms', filter: `id=eq.${roomId}` }, payload=>{
-        // ignore our own recent saves
+  try{
+    _roomSubscription = supabaseClient.channel('room_states-'+roomId)
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'room_states', filter: `room_id=eq.${roomId}` }, payload=>{
         if(Date.now() - _lastLocalSave < 500) return;
         if(_suppressRemoteLoad) return;
-        if(payload && payload.new && payload.new.state){
-          try{
-            loadFullRoomState(payload.new.state);
-            document.getElementById('roomStatus').textContent = 'Синхронизировано: ' + (payload.new.last_editor || 'unknown');
-          } catch(e){ console.error('Error applying remote state', e); }
+        if(payload && payload.new){
+          try{ applyRoomState(payload.new.plan_json, payload.new.map_state); document.getElementById('roomStatus').textContent = 'Синхронизировано: ' + (payload.new.last_editor || 'unknown'); }catch(e){ console.error(e); }
         }
       })
       .subscribe();
-  } catch(e){ console.error('subscribeToRoom error', e); }
+  }catch(e){ console.error(e); }
 }
 
-/* Load full room state (apply to local map) */
-function loadFullRoomState(state){
-  if(!state) return;
-  // assume state is the same shape as echelonStates; replace local and reload currentEchelon
-  try {
-    // merge or replace
-    echelonStates = state;
-    // ensure currentEchelon within bounds
-    if(typeof currentEchelon === 'undefined') currentEchelon = 0;
-    if(!echelonStates[currentEchelon]) currentEchelon = 0;
-    clearMapAll(); // helper to remove markers, drawings, etc.
-    loadEchelonState(currentEchelon);
-    console.log('Loaded remote room state');
-  } catch(e){ console.error(e); }
+/* joinRoom now loads from room_states and subscribes */
+async function joinRoom(roomId, nick){
+  if(!supabaseClient) throw new Error('Supabase not initialized');
+  currentRoomId = roomId;
+  currentNick = nick;
+  updateRoomUI();
+  const rs = await loadRoomState(roomId);
+  if(rs && rs.plan) await applyRoomState(rs.plan, rs.mapState);
+  subscribeToRoom(roomId);
 }
 
-/* Helper to clear the map fully before loading */
-function clearMapAll(){
-  // remove all markers and drawings
-  markerList.slice().forEach(m=>{
-    try{ map.removeLayer(m.marker); }catch(e){}
-  });
-  markerList = [];
-  simpleMarkers.slice().forEach(m=>{ try{ map.removeLayer(m); }catch(e){} });
-  simpleMarkers = [];
-  drawnItems.clearLayers();
-}
-
-/* Hook saveCurrentEchelonState to also save to Supabase when in room.
-   We'll call this function from saveCurrentEchelonState by name.
-*/
-async function _maybeSaveRoomStateHook(){
-  if(currentRoomId && supabaseClient){
-    try{
-      await saveRoomState();
-    }catch(e){ console.error(e); }
-  }
-}
-
+/* leave and delete room */
+function leaveRoom(){ currentRoomId = null; currentNick = null; unsubscribeRoom(); document.getElementById('roomStatus').textContent = 'Не в комнате'; document.getElementById('btnLeaveRoom').style.display='none'; }
+async function deleteRoom(roomId){ if(!supabaseClient) throw new Error('Supabase not initialized'); if(!confirm('Удалить комнату и все её данные?')) return; const { error } = await supabaseClient.from('rooms').delete().eq('id', roomId); if(error){ alert('Ошибка удаления: '+(error.message||error)); } else { unsubscribeRoom(); if(currentRoomId==roomId) leaveRoom(); try{ document.getElementById('btnRefreshRooms').click(); }catch(e){} } }
 /* --- Supabase multiplayer integration END --- */
+
+
 // ------------ Конфигурация ------------
 const MAP_COUNT = 25; // теперь map1..map25
 const MAP_FILE_PREFIX = "map"; // map1.jpg
@@ -1275,3 +1243,20 @@ function updateRoomUI(){
     leaveBtn.style.display = 'none';
   }
 }
+
+
+// room panel extra wiring (delete room)
+document.addEventListener('DOMContentLoaded', ()=>{
+  const delBtn = document.getElementById('btnDeleteRoom');
+  const leaveBtn = document.getElementById('btnLeaveRoom');
+  const statusEl = document.getElementById('roomStatus');
+  const observer = new MutationObserver(()=>{
+    if(currentRoomId){ delBtn.style.display='inline-block'; leaveBtn.style.display='inline-block'; }
+    else { delBtn.style.display='none'; leaveBtn.style.display='none'; }
+  });
+  observer.observe(statusEl, { childList:true, subtree:true });
+  delBtn.addEventListener('click', async ()=>{
+    if(!currentRoomId) return alert('Не в комнате');
+    await deleteRoom(currentRoomId);
+  });
+});

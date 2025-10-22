@@ -11,32 +11,18 @@
 
   <link rel="stylesheet" href="style.css" />
 
-  <!-- Supabase client -->
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 </head>
 <body>
 
-  <!-- ROOM PANEL (Supabase multiplayer) -->
-  <div id="room-panel" class="room-panel collapsed" aria-hidden="false">
-    <button id="room-toggle" class="room-toggle" title="Rooms">Rooms ⌄</button>
+  <!-- ROOM PANEL -->
+  <div id="room-panel" class="room-panel collapsed">
+    <button id="room-toggle" class="room-toggle">Rooms ⌄</button>
     <div class="room-content">
-      <div class="room-row">
-        <label for="nickInput">Никнейм</label>
-        <input id="nickInput" placeholder="Введите ник (например, Вася)"/>
-      </div>
-      <div class="room-row">
-        <label for="newRoomName">Создать комнату</label>
-        <input id="newRoomName" placeholder="Название новой комнаты"/>
-        <button id="btnCreateRoom">Создать</button>
-      </div>
-      <div class="room-row">
-        <label>Список комнат</label>
-        <div id="roomsList" class="rooms-list">Загрузка...</div>
-        <button id="btnRefreshRooms">Обновить</button>
-      </div>
-      <div class="room-row">
-        <button id="btnLeaveRoom" style="display:none;">Выйти из комнаты</button>
-      </div>
+      <div class="room-row"><label for="nickInput">Никнейм</label><input id="nickInput" placeholder="Введите ник"/></div>
+      <div class="room-row"><label for="newRoomName">Создать комнату</label><input id="newRoomName" placeholder="Название"/><button id="btnCreateRoom">Создать</button></div>
+      <div class="room-row"><label>Список комнат</label><div id="roomsList" class="rooms-list">Загрузка...</div><button id="btnRefreshRooms">Обновить</button></div>
+      <div class="room-row"><button id="btnLeaveRoom" style="display:none;">Выйти</button><button id="btnDeleteRoom" style="display:none;margin-left:8px;">Удалить</button></div>
       <div class="room-status" id="roomStatus">Не в комнате</div>
     </div>
   </div>
