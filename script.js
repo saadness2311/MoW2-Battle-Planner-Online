@@ -1,7 +1,5 @@
-// script.js
-
-
-
+// script_fixed.js
+// Модифицировано: минимальные правки синхронизации (флаги взаимодействия, очередь апдейтов)
 
 // Helper: clear all markers, simple symbols, drawings and image overlay
 function clearMapAll(){
@@ -32,7 +30,43 @@ function clearMapAll(){
 }
 
 
-/* --- Supabase multiplayer integration START (room_states -> state_json) --- */
+/* ========== НОВОЕ: минимальные флаги/очередь для защиты от мерцания ==========
+   Эти переменные минимально-инвазивны — не меняют логику хранения/сохранения.
+*/
+let _isInteracting = false;
+let _interactionReleaseTimer = null;
+const INTERACTION_RELEASE_DELAY = 300; // ms
+let _queuedRemoteState = null;
+
+/* helper: attach interaction handlers to marker-like objects */
+function attachInteractionHandlersToMarker(marker) {
+  if (!marker || !marker.on) return;
+  marker.on('dragstart', () => {
+    _isInteracting = true;
+    if (_interactionReleaseTimer) { clearTimeout(_interactionReleaseTimer); _interactionReleaseTimer = null; }
+    try{ console.log('[sync] marker dragstart'); }catch(e){}
+  });
+  marker.on('dragend', () => {
+    // небольшой буфер, затем снимаем флаг и применяем очередь
+    if (_interactionReleaseTimer) clearTimeout(_interactionReleaseTimer);
+    _interactionReleaseTimer = setTimeout(() => {
+      _isInteracting = false;
+      _interactionReleaseTimer = null;
+      try{ console.log('[sync] marker dragend -> applying queued remote if present'); }catch(e){}
+      if (_queuedRemoteState) {
+        try {
+          applyRoomState(_queuedRemoteState, { forceApply: true });
+        } catch(e) { console.error(e); }
+        _queuedRemoteState = null;
+      }
+    }, INTERACTION_RELEASE_DELAY);
+    try{ autoSave(); }catch(e){}
+  });
+
+  // If marker starts other interactions (popup open/close), you can extend here.
+}
+
+/* ========== Supabase multiplayer integration START (room_states -> state_json) --- */
 const SUPABASE_URL = 'https://zqklzhipwiifrrbyentg.supabase.co';
 const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inpxa2x6aGlwd2lpZnJyYnllbnRnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjA5NzQ0ODYsImV4cCI6MjA3NjU1MDQ4Nn0.siMc2xCvoBEjwNVwaOVvjlOtDODs9yDo0IDyGl9uWso';
 
@@ -106,8 +140,17 @@ async function loadRoomState(roomId){
 }
 
 /* Apply room state to local map */
-async function applyRoomState(state){
+async function applyRoomState(state, opts){
   if(!state) return;
+  // opts may contain forceApply to bypass interaction guard
+  const forceApply = opts && opts.forceApply;
+  // Если локально идёт взаимодействие и это не форс — ставим в очередь и выходим
+  if (_isInteracting && !forceApply) {
+    try{ console.log('[sync] applyRoomState called during interaction — queueing remote state'); }catch(e){}
+    _queuedRemoteState = state;
+    return;
+  }
+
   _suppressRemoteLoad = true;
   try{
     console.log('[Supabase] Applying room state, meta:', state.meta || {});
@@ -116,9 +159,16 @@ async function applyRoomState(state){
     // 1) СНАЧАЛА очистим объекты (но карта уже не будет обнуляться, т.к. ты убрал currentMapFile = null)
     try{ clearMapAll(); } catch(e){ console.warn('applyRoomState clearMapAll error', e); }
 
-    // 2) ПОТОМ загрузим карту снова
+    // 2) ПОТОМ загрузим карту снова (только если текущая карта не загружена)
     if(mapFile){
-      try{ await loadMapByFile(mapFile); } catch(e){ console.warn('applyRoomState: loadMapByFile failed', e); }
+      try{
+        // если карта отличается от той что у нас — загружаем
+        if(!currentMapFile || currentMapFile !== mapFile){
+          await loadMapByFile(mapFile);
+        } else {
+          // currentMapFile совпадает — не перезагружаем
+        }
+      } catch(e){ console.warn('applyRoomState: loadMapByFile failed', e); }
     }
 
     // 3) Восстановим эшелоны
@@ -134,9 +184,15 @@ async function applyRoomState(state){
     if(!echelonStates[currentEchelon]) currentEchelon = 1;
     loadEchelonState(currentEchelon);
 
-    // 4) Восстанавливаем положение карты
+    // 4) Восстанавливаем положение карты — только если не было локального ручного изменения совсем
     if(state.mapState && state.mapState.center && typeof state.mapState.zoom !== 'undefined'){
-      try{ map.setView(state.mapState.center, state.mapState.zoom); } catch(e){ console.warn('applyRoomState setView error', e); }
+      try{
+        if(!_isInteracting){
+          map.setView(state.mapState.center, state.mapState.zoom);
+        } else {
+          // если вдруг пришёл mapState во время взаимодействия (force недавно) — можно поставить в очередь, но мы уже вышли
+        }
+      } catch(e){ console.warn('applyRoomState setView error', e); }
     }
   } finally {
     setTimeout(()=>{ _suppressRemoteLoad = false; }, 200);
@@ -482,6 +538,15 @@ map.setView([0,0], 0);
 const drawnItems = new L.FeatureGroup();
 map.addLayer(drawnItems);
 
+// подключаем guards для взаимодействий (защита от внешних апдейтов во время drag/zoom)
+try { if (typeof setupInteractionGuards === 'function') { /* defined below */ } } catch(e) {}
+// вызовем наш простой guard-setup: (если функция не определена — ниже определена, поэтому вызов безопасен)
+if (typeof setupInteractionGuards === 'function') {
+  try{ setupInteractionGuards(map); }catch(e){}
+} else {
+  // если функция не определена в этом месте, определена ниже — всё равно сработает при следующем использовании
+}
+
 // ------------ Эшелоны (3 состояния карты) ------------
 const ECHELON_COUNT = 3;
 let currentEchelon = 1;
@@ -709,6 +774,8 @@ const SimpleSymbols = L.Control.extend({
           const mk = addCustomIcon(`assets/symbols/${name}.png`, map.getCenter());
           if (mk) mk._symbName = name;
           simpleMarkers.push(mk);
+          // attach handlers if possible
+          try{ attachInteractionHandlersToMarker(mk); }catch(e){}
         });
       });
     }
@@ -751,6 +818,7 @@ function addSimpleSymbol(type, latlng) {
     if(confirm('Удалить этот символ?')){ map.removeLayer(marker); const idx = simpleMarkers.indexOf(marker); if(idx!==-1) simpleMarkers.splice(idx,1); try{ autoSave(); }catch(e){} }
   });
 
+  try{ attachInteractionHandlersToMarker(marker); }catch(e){}
   try{ autoSave(); }catch(e){}; try{ autoSave(); }catch(e){}; return marker;
 }
 
@@ -786,6 +854,7 @@ function addCustomIcon(url, latlng) {
     if (confirm('Удалить этот символ?')) { map.removeLayer(marker); const idx = simpleMarkers.indexOf(marker); if (idx !== -1) simpleMarkers.splice(idx, 1); try{ autoSave(); }catch(e){} }
   });
 
+  try{ attachInteractionHandlersToMarker(marker); }catch(e){}
   try{ autoSave(); }catch(e){}; return marker;
 }
 
@@ -955,6 +1024,8 @@ function placeMarker(nick, nation, regimentFile, team, playerIndex){
   // не добавляем tooltip (как ты попросил удалить)
   marker.on('dragend', ()=> { try{ autoSave(); }catch(e){console.error(e);} });
 
+  try{ attachInteractionHandlersToMarker(marker); }catch(e){}
+
   const entry = { id, team, playerIndex, nick, nation, regimentFile, marker };
   markerList.push(entry);
   try{ autoSave(); }catch(e){}
@@ -1031,6 +1102,7 @@ function loadEchelonState(echelon) {
   (state.markers||[]).forEach(m=>{
     const pos = m.latlng || {lat:0,lng:0};
     const marker = L.marker([pos.lat,pos.lng], { icon:createRegDivIcon(m.nick,m.nation,m.regimentFile,m.team), draggable:true }).addTo(map);
+    try{ attachInteractionHandlersToMarker(marker); }catch(e){}
     markerList.push({...m, marker});
   });
 
@@ -1045,6 +1117,7 @@ function loadEchelonState(echelon) {
         icon: L.divIcon({ html: s.html || '', className: 'symbol-marker' }),
         draggable: true
       }).addTo(map);
+      try{ attachInteractionHandlersToMarker(marker); }catch(e){}
     }
     simpleMarkers.push(marker);
   });
@@ -1414,3 +1487,36 @@ document.addEventListener('DOMContentLoaded', ()=>{
     await deleteRoom(currentRoomId);
   });
 });
+
+/* ========== Дополнение: setupInteractionGuards (подключаем события карты) ========== */
+// Расположено в конце чтобы гарантированно использовать map
+function setupInteractionGuards(mapInstance) {
+  if (!mapInstance || !mapInstance.on) return;
+
+  function markInteracting() {
+    _isInteracting = true;
+    if (_interactionReleaseTimer) { clearTimeout(_interactionReleaseTimer); _interactionReleaseTimer = null; }
+  }
+  function releaseInteracting() {
+    if (_interactionReleaseTimer) clearTimeout(_interactionReleaseTimer);
+    _interactionReleaseTimer = setTimeout(() => {
+      _isInteracting = false;
+      _interactionReleaseTimer = null;
+      if (_queuedRemoteState) {
+        try {
+          applyRoomState(_queuedRemoteState, { forceApply: true });
+        } catch(e) { console.error(e); }
+        _queuedRemoteState = null;
+      }
+    }, INTERACTION_RELEASE_DELAY);
+  }
+
+  // map interactions that indicate user intent: mousedown/touchstart/dragstart/movestart/zoomstart
+  mapInstance.on('mousedown touchstart dragstart movestart zoomstart', markInteracting);
+  mapInstance.on('mouseup touchend dragend moveend zoomend', releaseInteracting);
+}
+
+// Попробуем подключить guards (если map уже инициализирован)
+try { setupInteractionGuards(map); } catch(e) { /*ignore*/ }
+
+// Конец файла
