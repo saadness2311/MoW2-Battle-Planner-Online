@@ -1315,3 +1315,167 @@ document.addEventListener('DOMContentLoaded', function(){
     }
   }catch(e){ console.error('init btnDeleteRoom error', e); }
 });
+
+// === FIX: рабочая кнопка "Удалить комнату" ===
+// Вставь этот блок в конец script.js
+
+(function(){
+  // Убедимся, что кнопка существует в DOM — если нет, создадим
+  function ensureDeleteButtonInDOM(){
+    let btn = document.getElementById('btnDeleteRoom');
+    if(!btn){
+      // создаём кнопку в панели (ищем room-panel)
+      const panel = document.getElementById('room-panel') || document.body;
+      const row = document.createElement('div');
+      row.className = 'room-row';
+      btn = document.createElement('button');
+      btn.id = 'btnDeleteRoom';
+      btn.textContent = 'Удалить комнату';
+      btn.style.display = 'none';
+      btn.style.marginLeft = '8px';
+      row.appendChild(btn);
+      // попробуем добавить в .room-content если есть
+      const content = panel.querySelector('.room-content');
+      if(content){
+        content.appendChild(row);
+      } else {
+        panel.appendChild(row);
+      }
+    }
+    return btn;
+  }
+
+  const btnDelete = ensureDeleteButtonInDOM();
+
+  // Асинхронная функция удаления текущей комнаты
+  async function handleDeleteCurrentRoom(){
+    try{
+      if(!currentRoomId){
+        alert('Вы не в комнате — нечего удалять.');
+        return;
+      }
+      if(!confirm('Удалить комнату и все её данные? Это действие необратимо.')){
+        return;
+      }
+
+      const rid = Number(currentRoomId);
+      if(Number.isNaN(rid)){
+        alert('Неверный id комнаты: ' + currentRoomId);
+        return;
+      }
+
+      // Удаляем сначала состояние комнаты (если есть) — это безопасно даже при cascade
+      try{
+        if(typeof supabaseClient !== 'undefined' && supabaseClient){
+          console.log('[DeleteRoom] deleting room_states for', rid);
+          const { error: err1 } = await supabaseClient.from('room_states').delete().eq('room_id', rid);
+          if(err1) console.warn('[DeleteRoom] error deleting room_states (ignored):', err1);
+        }
+      }catch(e){
+        console.warn('Error deleting room_states (ignored):', e);
+      }
+
+      // Удаляем саму комнату
+      if(!supabaseClient) {
+        alert('Supabase не инициализирован, удаление невозможно.');
+        return;
+      }
+      console.log('[DeleteRoom] deleting room', rid);
+      const { data, error } = await supabaseClient.from('rooms').delete().eq('id', rid);
+      if(error){
+        console.error('[DeleteRoom] supabase error:', error);
+        alert('Ошибка удаления комнаты: ' + (error.message || JSON.stringify(error)));
+        return;
+      }
+      console.log('[DeleteRoom] success', data);
+
+      // Если мы в этой комнате — покидаем её
+      if(String(currentRoomId) === String(rid) || Number(currentRoomId) === rid){
+        try{
+          // leaveRoom может быть async — вызываем безопасно
+          if(typeof leaveRoom === 'function'){
+            await leaveRoom();
+          } else {
+            currentRoomId = null;
+            currentNick = null;
+            if(typeof unsubscribeRoom === 'function') unsubscribeRoom();
+            const statusEl = document.getElementById('roomStatus');
+            if(statusEl) statusEl.textContent = 'Не в комнате';
+          }
+        }catch(e){ console.warn('leaveRoom after delete failed', e); }
+      }
+
+      // Обновим список комнат UI (если есть кнопка обновления)
+      try{
+        const refresh = document.getElementById('btnRefreshRooms');
+        if(refresh) refresh.click();
+        else if(typeof listRooms === 'function'){
+          // если есть функция, вызовем её и обновим #roomsList
+          const rooms = await listRooms();
+          const listEl = document.getElementById('roomsList');
+          if(listEl){
+            listEl.innerHTML = rooms.map(r=>`<div class="room-item" data-id="${r.id}">${r.name || 'room '+r.id}</div>`).join('') || 'Нет комнат';
+          }
+        }
+      }catch(e){ console.warn('refresh rooms UI failed', e); }
+
+      alert('Комната удалена.');
+    }catch(e){
+      console.error('handleDeleteCurrentRoom exception', e);
+      alert('Ошибка при удалении комнаты: ' + (e && e.message ? e.message : e));
+    }
+  }
+
+  // Повесим обработчик
+  btnDelete.addEventListener('click', function(ev){
+    ev.preventDefault();
+    handleDeleteCurrentRoom();
+  });
+
+  // Показываем/скрываем кнопку через updateRoomUI, если есть такая функция — дополняем её.
+  // Если updateRoomUI не определена, создадим простую реализацию.
+  function ensureUpdateRoomUI(){
+    if(typeof updateRoomUI === 'function'){
+      // расширим её: запомним старую, и сделаем обёртку
+      if(!updateRoomUI.__wrapped_with_delete){
+        const orig = updateRoomUI;
+        updateRoomUI = function(){
+          try{ orig.apply(this, arguments); }catch(e){ console.warn('orig updateRoomUI error', e); }
+          // после оригинального обновления — показываем кнопку если есть комната
+          try{
+            const btn = ensureDeleteButtonInDOM();
+            if(currentRoomId) btn.style.display = 'inline-block'; else btn.style.display = 'none';
+          }catch(e){ console.warn('updateRoomUI show delete button error', e); }
+        };
+        updateRoomUI.__wrapped_with_delete = true;
+      }
+    } else {
+      // простая реализация, будет вызываться где надо
+      window.updateRoomUI = function(){
+        try{
+          const btn = ensureDeleteButtonInDOM();
+          if(currentRoomId) btn.style.display = 'inline-block'; else btn.style.display = 'none';
+          const statusEl = document.getElementById('roomStatus');
+          if(statusEl) statusEl.textContent = currentRoomId ? ('В комнате: ' + (currentNick || '')) : 'Не в комнате';
+        }catch(e){ console.warn('fallback updateRoomUI error', e); }
+      };
+      window.updateRoomUI.__wrapped_with_delete = true;
+    }
+  }
+
+  // Инициализация после DOM
+  document.addEventListener('DOMContentLoaded', function(){
+    ensureDeleteButtonInDOM();
+    ensureUpdateRoomUI();
+    // initial call
+    try{ updateRoomUI(); }catch(e){}
+  });
+
+  // Также обновим отображение, если currentRoomId меняется напрямую в коде - можно наблюдать за элементом статуса:
+  var statusEl = document.getElementById('roomStatus');
+  if(statusEl){
+    // простейший observer: при изменении текста — обновляем видимость
+    const obs = new MutationObserver(function(){ try{ updateRoomUI(); }catch(e){} });
+    obs.observe(statusEl, { childList: true, subtree: true });
+  }
+})();
