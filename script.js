@@ -2,6 +2,35 @@
 
 
 
+
+// Helper: clear all markers, simple symbols, drawings and image overlay
+function clearMapAll(){
+  try{
+    // remove drawn shapes
+    if(typeof drawnItems !== 'undefined' && drawnItems && drawnItems.clearLayers) drawnItems.clearLayers();
+  } catch(e){ console.warn('clearMapAll drawnItems error', e); }
+  try{
+    if(typeof markerList !== 'undefined' && Array.isArray(markerList)){
+      markerList.forEach(m=>{ try{ if(m && m.marker) map.removeLayer(m.marker); }catch(e){} });
+      markerList = [];
+    }
+  } catch(e){ console.warn('clearMapAll markerList error', e); }
+  try{
+    if(typeof simpleMarkers !== 'undefined' && Array.isArray(simpleMarkers)){
+      simpleMarkers.forEach(m=>{ try{ map.removeLayer(m); }catch(e){} });
+      simpleMarkers = [];
+    }
+  } catch(e){ console.warn('clearMapAll simpleMarkers error', e); }
+  try{
+    if(typeof imageOverlay !== 'undefined' && imageOverlay){
+      try{ map.removeLayer(imageOverlay); }catch(e){};
+      imageOverlay = null;
+      imageBounds = null;
+      currentMapFile = null;
+    }
+  } catch(e){ console.warn('clearMapAll imageOverlay error', e); }
+}
+
 /* --- Supabase multiplayer integration START (room_states) --- */
 const SUPABASE_URL = 'https://zqklzhipwiifrrbyentg.supabase.co';
 const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inpxa2x6aGlwd2lpZnJyYnllbnRnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjA5NzQ0ODYsImV4cCI6MjA3NjU1MDQ4Nn0.siMc2xCvoBEjwNVwaOVvjlOtDODs9yDo0IDyGl9uWso';
