@@ -1372,3 +1372,165 @@ document.getElementById('btnSaveImage').addEventListener('click', saveMapAsScree
 
   console.log('[planSync] initialized (non-invasive) for room', ROOM);
 })();
+
+
+/*
+  Safe Plan Sync Module (non-invasive)
+
+  Usage:
+    1) Include this file after your main script (or load it via console).
+    2) From console, call: window._planSyncSafe.init({ autoRestore: false });
+       - autoRestore: if true, attempts to call loadPlanData(plan) on init (default false).
+    3) You can also call window._planSyncSafe.persistPlan() manually after map changes.
+
+  This module intentionally:
+    - DOES NOT auto-run on page load.
+    - DOES NOT wrap or replace your existing functions.
+    - DOES NOT listen to UI DOM elements.
+    - Provides safe persist/restore functions you can call when ready.
+*/
+
+(function(window){
+  const module = {};
+  function getRoomId() {
+    try {
+      const params = new URLSearchParams(location.search);
+      return params.get('room') || params.get('roomId') || 'default';
+    } catch(e){ return 'default'; }
+  }
+  const ROOM_ID = getRoomId();
+  const STORAGE_KEY = 'plan:' + ROOM_ID;
+  const BC_NAME = 'plan-sync-' + ROOM_ID;
+  let broadcast = null;
+  try { if ('BroadcastChannel' in window) broadcast = new BroadcastChannel(BC_NAME); } catch(e){ broadcast = null; }
+
+  function cloneEchelonsForStorage(echelonStatesObj) {
+    const out = {};
+    if (!echelonStatesObj) return out;
+    for (const k in echelonStatesObj) {
+      const s = echelonStatesObj[k];
+      if (!s) continue;
+      out[k] = {
+        markers: (s.markers || []).map(m => {
+          const copy = Object.assign({}, m);
+          if (copy.marker !== undefined) delete copy.marker;
+          return copy;
+        }),
+        simple: s.simple || [],
+        drawings: s.drawings || []
+      };
+    }
+    return out;
+  }
+
+  function buildPlanObject() {
+    try { if (typeof saveCurrentEchelonState === 'function') saveCurrentEchelonState(); } catch(e){}
+    const plan = {
+      meta: {
+        savedAt: new Date().toISOString(),
+        mapFile: (typeof currentMapFile !== 'undefined') ? currentMapFile : null,
+        echelonCount: (typeof ECHELON_COUNT !== 'undefined') ? ECHELON_COUNT : null
+      },
+      echelons: (typeof echelonStates !== 'undefined') ? cloneEchelonsForStorage(echelonStates) : {},
+      mapState: {}
+    };
+    try {
+      if (typeof map !== 'undefined' && map && typeof map.getCenter === 'function') {
+        const c = map.getCenter();
+        plan.mapState = { center: {lat: c.lat, lng: c.lng}, zoom: map.getZoom() };
+      }
+    } catch(e){}
+    return plan;
+  }
+
+  const SYNC_THROTTLE_MS = 500;
+  let lastPersist = 0;
+  function persistPlan(force){
+    const now = Date.now();
+    if (!force && now - lastPersist < SYNC_THROTTLE_MS) return;
+    lastPersist = now;
+    const plan = buildPlanObject();
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(plan));
+    } catch(e){ console.warn('planSafe: localStorage write failed', e); }
+    try {
+      if (broadcast) broadcast.postMessage({ type: 'plan', plan });
+      else localStorage.setItem(STORAGE_KEY + ':ping', Date.now().toString());
+    } catch(e){ console.warn('planSafe: broadcast failed', e); }
+  }
+
+  function tryRestoreFromStorage(){
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (!raw) return null;
+      const plan = JSON.parse(raw);
+      return plan;
+    } catch(e){
+      console.warn('planSafe: restore failed', e);
+      return null;
+    }
+  }
+
+  function setupBroadcastListener(onPlanReceived){
+    if (!broadcast) return;
+    broadcast.onmessage = (ev) => {
+      try {
+        if (!ev.data) return;
+        if (ev.data.type === 'plan' && ev.data.plan) {
+          onPlanReceived && onPlanReceived(ev.data.plan);
+        }
+      } catch(e){ console.warn(e); }
+    };
+  }
+
+  // storage event listener (other tabs)
+  function setupStorageListener(onPlanReceived){
+    window.addEventListener('storage', (ev) => {
+      if (!ev.key) return;
+      if (ev.key === STORAGE_KEY && ev.newValue) {
+        try {
+          const plan = JSON.parse(ev.newValue);
+          onPlanReceived && onPlanReceived(plan);
+        } catch(e){ console.warn(e); }
+      } else if (ev.key === STORAGE_KEY + ':ping') {
+        // ping - re-read main key
+        const plan = tryRestoreFromStorage();
+        if (plan) onPlanReceived && onPlanReceived(plan);
+      }
+    });
+  }
+
+  // Public API
+  module.init = function(opts){
+    opts = opts || {};
+    const autoRestore = !!opts.autoRestore;
+    const onPlanReceived = opts.onPlanReceived || function(plan){
+      // default behavior: call existing loadPlanData(plan) if present
+      try {
+        if (typeof loadPlanData === 'function') {
+          console.log('[planSafe] loadPlanData called for room', ROOM_ID);
+          loadPlanData(plan);
+        } else {
+          console.log('[planSafe] plan received but loadPlanData() not found', plan);
+        }
+      } catch(e){ console.warn('planSafe: onPlanReceived error', e); }
+    };
+    setupBroadcastListener(onPlanReceived);
+    setupStorageListener(onPlanReceived);
+    if (autoRestore) {
+      const plan = tryRestoreFromStorage();
+      if (plan) onPlanReceived(plan);
+    }
+    console.log('[planSafe] initialized for room', ROOM_ID, 'autoRestore=', autoRestore);
+  };
+
+  module.persistPlan = persistPlan;
+  module.restorePlan = function(){
+    return tryRestoreFromStorage();
+  };
+  module.storageKey = STORAGE_KEY;
+  module.roomId = ROOM_ID;
+
+  window._planSyncSafe = module;
+})(window);
+
