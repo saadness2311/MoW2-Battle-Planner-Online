@@ -1,282 +1,172 @@
 // script.js
 
-
-
-
-// Helper: clear all markers, simple symbols, drawings and image overlay
-function clearMapAll(){
-  try{
-    // remove drawn shapes
-    if(typeof drawnItems !== 'undefined' && drawnItems && drawnItems.clearLayers) drawnItems.clearLayers(); try{ autoSave(); }catch(e){};
-  } catch(e){ console.warn('clearMapAll drawnItems error', e); }
-  try{
-    if(typeof markerList !== 'undefined' && Array.isArray(markerList)){
-      markerList.forEach(m=>{ try{ if(m && m.marker) map.removeLayer(m.marker); }catch(e){} });
-      markerList = []; try{ autoSave(); }catch(e){};
-    }
-  } catch(e){ console.warn('clearMapAll markerList error', e); }
-  try{
-    if(typeof simpleMarkers !== 'undefined' && Array.isArray(simpleMarkers)){
-      simpleMarkers.forEach(m=>{ try{ map.removeLayer(m); }catch(e){} });
-      simpleMarkers = [];
-    }
-  } catch(e){ console.warn('clearMapAll simpleMarkers error', e); }
-  try{
-    if(typeof imageOverlay !== 'undefined' && imageOverlay){
-      try{ map.removeLayer(imageOverlay); }catch(e){};
-      imageOverlay = null;
-      imageBounds = null;
-      currentMapFile = null;
-    }
-  } catch(e){ console.warn('clearMapAll imageOverlay error', e); }
-}
-
-
-/* --- Supabase multiplayer integration START (room_states -> state_json) --- */
+/* --- Supabase multiplayer integration START --- */
+/* Replace these with your Supabase project URL and anon public key.
+   Instructions to fill these values are in README.md (search for SUPABASE_URL).
+*/
 const SUPABASE_URL = 'https://zqklzhipwiifrrbyentg.supabase.co';
 const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inpxa2x6aGlwd2lpZnJyYnllbnRnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjA5NzQ0ODYsImV4cCI6MjA3NjU1MDQ4Nn0.siMc2xCvoBEjwNVwaOVvjlOtDODs9yDo0IDyGl9uWso';
 
-/* Initialize Supabase client */
+/* Supabase client (will be available after including supabase script) */
 let supabaseClient = null;
 try {
-  if (typeof supabase !== 'undefined') {
+  if(typeof supabase !== 'undefined'){
     supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
   } else {
-    console.warn('Supabase script not found; realtime disabled until script loaded.');
+    console.warn('Supabase script not found - real-time disabled until keys are provided and script loaded.');
   }
-} catch (e) {
+} catch(e){
   console.error('Supabase init error', e);
 }
 
-/* Room state variables */
-let currentRoomId = null; // bigint id from rooms.id
+/* Room state */
+let currentRoomId = null;
 let currentNick = null;
 let _suppressRemoteLoad = false;
 let _lastLocalSave = 0;
-let _roomSubscription = null;
 
-/* Create room (rooms table) */
+/* Create a room (returns {id,name}) */
 async function createRoom(name){
   if(!supabaseClient) throw new Error('Supabase client not initialized');
   const now = new Date().toISOString();
-  const payload = { name: name, owner: currentNick || null, created_at: now, updated_at: now };
+  const payload = { name: name, state: {}, created_at: now, updated_at: now };
   const { data, error } = await supabaseClient.from('rooms').insert(payload).select().limit(1);
-  if(error){ console.error('createRoom error', error); throw error; }
+  if(error) { console.error('createRoom error', error); throw error; }
   return data && data[0];
 }
 
 /* List rooms */
 async function listRooms(){
   if(!supabaseClient) return [];
-  const { data, error } = await supabaseClient.from('rooms').select('id,name,updated_at').order('updated_at',{ascending:false}).limit(200);
+  const { data, error } = await supabaseClient.from('rooms').select('id,name,updated_at').order('updated_at', {ascending:false}).limit(100);
   if(error){ console.error('listRooms error', error); return []; }
   return data || [];
 }
 
-/* Load room state (state_json) */
-async function loadRoomState(roomId){
-  if(!supabaseClient) return null;
-  console.log('[Supabase] loadRoomState for', roomId);
-  const { data, error } = await supabaseClient.from('room_states').select('state_json, updated_at').eq('room_id', roomId).single();
-  if(error){
-    // PGRST116: row not found - ignore
-    if(error.code && error.code !== 'PGRST116'){
-      console.error('loadRoomState select error', error);
-    }
-  }
-  if(data && data.state_json){
-    console.log('[Supabase] loaded state_json (size):', JSON.stringify(data.state_json).length);
-    return { state: data.state_json, updated_at: data.updated_at };
-  } else {
-    // create initial empty state based on current map
-    const initialPlan = {
-      meta: { createdAt: new Date().toISOString(), mapFile: currentMapFile || null, echelonCount: ECHELON_COUNT },
-      echelons: {},
-      mapState: { center: (map && map.getCenter) ? map.getCenter() : null, zoom: (map && map.getZoom) ? map.getZoom() : null }
-    };
-    for(let e=1;e<=ECHELON_COUNT;e++){
-      initialPlan.echelons[e] = { markers: [], simple: [], drawings: [] };
-    }
-    const payload = { room_id: Number(roomId), state_json: initialPlan, updated_at: new Date().toISOString() };
-    const { data: insData, error: insErr } = await supabaseClient.from('room_states').upsert(payload, { onConflict: 'room_id' }).select().limit(1);
-    if(insErr){ console.error('loadRoomState upsert error', insErr); }
-    else { console.log('[Supabase] created initial room_state for', roomId); }
-    return { state: initialPlan, updated_at: new Date().toISOString() };
-  }
-}
-
-/* Apply room state to local map */
-async function applyRoomState(state){
-  if(!state) return;
-  _suppressRemoteLoad = true;
+/* Join a room by id, set nickname */
+async function joinRoom(roomId, nick){
+  if(!supabaseClient) throw new Error('Supabase not initialized');
+  currentRoomId = roomId;
+  currentNick = nick;
+  // try load from room_states.state_json first
   try{
-    console.log('[Supabase] Applying room state, meta:', state.meta || {});
-    // load mapFile if present
-    const mapFile = state.meta && state.meta.mapFile ? state.meta.mapFile : (state.mapFile || null);
-    if(mapFile){
-      try{ await loadMapByFile(mapFile); } catch(e){ console.warn('applyRoomState: loadMapByFile failed', e); }
+    const { data: rs, error: rerr } = await supabaseClient.from('room_states').select('state_json').eq('room_id', roomId).single();
+    if(rerr){
+      if(rerr.code && rerr.code !== 'PGRST116') console.warn('joinRoom room_states select error', rerr);
     }
-    // restore echelons
-    for(let e=1;e<= (state.meta && state.meta.echelonCount ? state.meta.echelonCount : ECHELON_COUNT); e++){
-      const s = (state.echelons && state.echelons[e]) ? state.echelons[e] : { markers:[], simple:[], drawings:[] };
-      echelonStates[e] = {
-        markers: (s.markers||[]).map(m => ({ ...m, marker: null })),
-        simple: s.simple || [],
-        drawings: s.drawings || []
-      };
+    if(rs && rs.state_json){
+      _suppressRemoteLoad = true;
+      try{ loadPlanData(rs.state_json); } catch(e){ console.error('loadPlanData error', e); }
+      _suppressRemoteLoad = false;
+      subscribeToRoom(roomId);
+      updateRoomUI();
+      return;
     }
-    // set current echelon and reload map objects
-    if(typeof currentEchelon === 'undefined') currentEchelon = 1;
-    if(!echelonStates[currentEchelon]) currentEchelon = 1;
-    try{ clearMapAll(); } catch(e){ console.warn('applyRoomState clearMapAll error', e); }
-    loadEchelonState(currentEchelon);
-    // restore map view
-    if(state.mapState && state.mapState.center && typeof state.mapState.zoom !== 'undefined'){
-      try{ map.setView(state.mapState.center, state.mapState.zoom); } catch(e){ console.warn('applyRoomState setView error', e); }
+  }catch(e){ console.error('joinRoom room_states fetch failed', e); }
+  // fallback: legacy rooms.state field
+  try{
+    const { data, error } = await supabaseClient.from('rooms').select('state').eq('id', roomId).single();
+    if(error) console.error('joinRoom fetch error', error);
+    if(data && data.state){
+      _suppressRemoteLoad = true;
+      try { loadFullRoomState(data.state); } catch(e){ console.error(e); }
+      _suppressRemoteLoad = false;
     }
-  } finally {
-    setTimeout(()=>{ _suppressRemoteLoad = false; }, 200);
-  }
+  }catch(e){ console.error('joinRoom legacy fetch failed', e); }
+  subscribeToRoom(roomId);
+  updateRoomUI();
 }
 
-/* Build plan from current local echelonStates */
-function buildCurrentPlan(){
-  const plan = {
-    meta: { createdAt: new Date().toISOString(), mapFile: currentMapFile || null, echelonCount: ECHELON_COUNT },
-    echelons: {},
-    mapState: { center: (map && map.getCenter) ? map.getCenter() : null, zoom: (map && map.getZoom) ? map.getZoom() : null }
-  };
-  for(let e=1;e<=ECHELON_COUNT;e++){
-    const st = echelonStates[e] || { markers:[], simple:[], drawings:[] };
-    plan.echelons[e] = {
-      markers: (st.markers||[]).map(m => ({
-        id: m.id, team: m.team, playerIndex: m.playerIndex, nick: m.nick, nation: m.nation, regimentFile: m.regimentFile,
-        latlng: (m.latlng) ? m.latlng : (m.marker && m.marker.getLatLng ? m.marker.getLatLng() : null)
-      })),
-      simple: st.simple || [],
-      drawings: st.drawings || []
-    };
-  }
-  return plan;
+/* Leave room */
+function leaveRoom(){
+  currentRoomId = null;
+  currentNick = null;
+  unsubscribeRoom();
+  document.getElementById('roomStatus').textContent = 'Не в комнате';
+  document.getElementById('btnLeaveRoom').style.display = 'none';
 }
 
-/* Save room state reliably into room_states.state_json */
+/* Save room state (uploads entire echelonStates) */
 async function saveRoomState(){
-  if(!supabaseClient || !currentRoomId) { console.warn('saveRoomState: supabaseClient or currentRoomId missing'); return; }
-  try{
-    // ensure local state updated
-    try{ saveCurrentEchelonState(); } catch(e){ console.warn('saveRoomState: saveCurrentEchelonState error', e); }
-    const plan = buildCurrentPlan();
-    const rid = Number(currentRoomId);
-    console.log('[Supabase] saveRoomState upsert for room', rid, 'plan size', JSON.stringify(plan).length);
-    // upsert into room_states
-    const payload = { room_id: rid, state_json: plan, updated_at: new Date().toISOString(), last_editor: currentNick || null };
-    const { data, error } = await supabaseClient.from('room_states').upsert(payload, { onConflict: 'room_id' }).select().limit(1);
-    if(error){
-      console.error('[Supabase] saveRoomState upsert error', error);
-      try{ alert('Ошибка сохранения комнаты: ' + (error.message || JSON.stringify(error))); }catch(e){}
-    } else {
-      console.log('[Supabase] saveRoomState success', data && data[0] ? 'ok' : data);
-    }
+  if(!supabaseClient || !currentRoomId) return;
+  try {
+    const now = new Date().toISOString();
+    const payload = { id: currentRoomId, state: echelonStates, updated_at: now, last_editor: currentNick || null };
+    // try update; if fails, upsert via insert...on conflict
+    const { error } = await supabaseClient.from('rooms').upsert(payload, {onConflict: 'id'});
+    if(error) console.error('saveRoomState error', error);
     _lastLocalSave = Date.now();
-  } catch(e){
-    console.error('saveRoomState exception', e);
-    try{ alert('Ошибка сохранения комнаты: ' + e.message); }catch(e){}
-  }
+  } catch(e){ console.error('saveRoomState exception', e); }
 }
 
-/* Realtime subscribe to room_states (UPDATE) */
+/* Subscribe to changes for a given room id */
+let _roomSubscription = null;
 function unsubscribeRoom(){
-  if(_roomSubscription && supabaseClient){
-    try{ supabaseClient.removeChannel(_roomSubscription); }catch(e){}
+  if(_roomSubscription){
+    try{ supabaseClient.removeChannel(_roomSubscription); }catch(e){/*ignore*/ }
     _roomSubscription = null;
   }
 }
 function subscribeToRoom(roomId){
   if(!supabaseClient) return;
   unsubscribeRoom();
-  try{
-    _roomSubscription = supabaseClient.channel('room_states-'+roomId)
-      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'room_states', filter: `room_id=eq.${roomId}` }, payload=>{
-        // ignore own recent saves
+  try {
+    _roomSubscription = supabaseClient.channel('room-'+roomId)
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'rooms', filter: `id=eq.${roomId}` }, payload=>{
+        // ignore our own recent saves
         if(Date.now() - _lastLocalSave < 500) return;
         if(_suppressRemoteLoad) return;
-        if(payload && payload.new && payload.new.state_json){
+        if(payload && payload.new && payload.new.state){
           try{
-            console.log('[Supabase] realtime update received for room', roomId);
-            applyRoomState(payload.new.state_json);
+            loadFullRoomState(payload.new.state);
             document.getElementById('roomStatus').textContent = 'Синхронизировано: ' + (payload.new.last_editor || 'unknown');
-          } catch(e){ console.error('Error applying room_state', e); }
+          } catch(e){ console.error('Error applying remote state', e); }
         }
       })
       .subscribe();
-    console.log('[Supabase] subscribed to room_states for', roomId);
   } catch(e){ console.error('subscribeToRoom error', e); }
 }
 
-/* Join room: save previous, load new, subscribe */
-async function joinRoom(roomId, nick){
-  if(!supabaseClient) throw new Error('Supabase not initialized');
-  if(currentRoomId && currentRoomId !== roomId){
-    try{ await saveRoomState(); } catch(e){ console.warn('save previous room failed', e); }
-  }
-  currentRoomId = roomId;
-  currentNick = nick;
-  updateRoomUI();
-  console.log('[Supabase] joinRoom', roomId, 'nick', nick);
-  const rs = await loadRoomState(roomId);
-  if(rs && rs.state){
-    try{ applyRoomState(rs.state); } catch(e){ console.error('applyRoomState after join error', e); }
-  }
-  subscribeToRoom(roomId);
+/* Load full room state (apply to local map) */
+function loadFullRoomState(state){
+  if(!state) return;
+  // assume state is the same shape as echelonStates; replace local and reload currentEchelon
+  try {
+    // merge or replace
+    echelonStates = state;
+    // ensure currentEchelon within bounds
+    if(typeof currentEchelon === 'undefined') currentEchelon = 0;
+    if(!echelonStates[currentEchelon]) currentEchelon = 0;
+    clearMapAll(); // helper to remove markers, drawings, etc.
+    loadEchelonState(currentEchelon);
+    console.log('Loaded remote room state');
+  } catch(e){ console.error(e); }
 }
 
-/* Leave room: save then leave */
-async function leaveRoom(){
-  try{ if(currentRoomId) await saveRoomState(); } catch(e){ console.warn('leaveRoom save failed', e); }
-  currentRoomId = null;
-  currentNick = null;
-  unsubscribeRoom();
-  try{ document.getElementById('roomStatus').textContent = 'Не в комнате'; document.getElementById('btnLeaveRoom').style.display = 'none'; }catch(e){}
+/* Helper to clear the map fully before loading */
+function clearMapAll(){
+  // remove all markers and drawings
+  markerList.slice().forEach(m=>{
+    try{ map.removeLayer(m.marker); }catch(e){}
+  });
+  markerList = [];
+  simpleMarkers.slice().forEach(m=>{ try{ map.removeLayer(m); }catch(e){} });
+  simpleMarkers = [];
+  drawnItems.clearLayers();
 }
 
-/* Delete room */
-async function deleteRoom(roomId){
-  if(!supabaseClient) throw new Error('Supabase not initialized');
-  if(!confirm('Удалить комнату и все её данные?')) return;
-  const { error } = await supabaseClient.from('rooms').delete().eq('id', roomId);
-  if(error){ alert('Ошибка удаления: '+ (error.message || error)); console.error(error); return; }
-  unsubscribeRoom();
-  if(currentRoomId == roomId) await leaveRoom();
-  try{ document.getElementById('btnRefreshRooms').click(); }catch(e){}
+/* Hook saveCurrentEchelonState to also save to Supabase when in room.
+   We'll call this function from saveCurrentEchelonState by name.
+*/
+async function _maybeSaveRoomStateHook(){
+  if(currentRoomId && supabaseClient){
+    try{
+      await saveRoomState();
+    }catch(e){ console.error(e); }
+  }
 }
 
 /* --- Supabase multiplayer integration END --- */
-
-
-/* --- Autosave / debounce wiring --- */
-function debounce(fn, delay){
-  let t;
-  return function(...args){
-    if(t) clearTimeout(t);
-    t = setTimeout(()=> {
-      try { fn.apply(this, args); } catch(e){ console.error('debounce fn error', e); }
-    }, delay);
-  };
-}
-
-// autoSave triggers saveRoomState but respects _suppressRemoteLoad to avoid loops
-const autoSave = debounce(async function(){
-  try{
-    if(_suppressRemoteLoad) return;
-    if(!currentRoomId) return;
-    if(!supabaseClient) return;
-    await saveRoomState();
-  }catch(e){ console.error('autoSave error', e); }
-}, 600);
-
-
-
 // ------------ Конфигурация ------------
 const MAP_COUNT = 25; // теперь map1..map25
 const MAP_FILE_PREFIX = "map"; // map1.jpg
@@ -604,12 +494,6 @@ map.on(L.Draw.Event.CREATED, function (e) {
     // circle has options.radius already
     // ensure stroke color/weight set
     layer.setStyle && layer.setStyle({ color: getDrawColor(), weight: getDrawWeight() });
-
-// Auto-save on draw events
-map.on('draw:created', function(e){ try{ autoSave(); }catch(e){console.error(e);} });
-map.on('draw:edited', function(e){ try{ autoSave(); }catch(e){console.error(e);} });
-map.on('draw:deleted', function(e){ try{ autoSave(); }catch(e){console.error(e);} });
-
   }
   drawnItems.addLayer(layer);
 });
@@ -744,10 +628,14 @@ function addSimpleSymbol(type, latlng) {
   marker._simpleType = type; // чтобы при сохранении/загрузке восстановить тип
 
   marker.on('click', () => {
-    if(confirm('Удалить этот символ?')){ map.removeLayer(marker); const idx = simpleMarkers.indexOf(marker); if(idx!==-1) simpleMarkers.splice(idx,1); try{ autoSave(); }catch(e){} }
+    if(confirm('Удалить этот символ?')){
+      map.removeLayer(marker);
+      const idx = simpleMarkers.indexOf(marker);
+      if(idx!==-1) simpleMarkers.splice(idx,1);
+    }
   });
 
-  try{ autoSave(); }catch(e){}; try{ autoSave(); }catch(e){}; return marker;
+  return marker;
 }
 
 function addCustomIcon(url, latlng) {
@@ -779,10 +667,14 @@ function addCustomIcon(url, latlng) {
   } catch (e) { console.warn('tooltip bind error', e); }
 
   marker.on('click', () => {
-    if (confirm('Удалить этот символ?')) { map.removeLayer(marker); const idx = simpleMarkers.indexOf(marker); if (idx !== -1) simpleMarkers.splice(idx, 1); try{ autoSave(); }catch(e){} }
+    if (confirm('Удалить этот символ?')) {
+      map.removeLayer(marker);
+      const idx = simpleMarkers.indexOf(marker);
+      if (idx !== -1) simpleMarkers.splice(idx, 1);
+    }
   });
 
-  try{ autoSave(); }catch(e){}; return marker;
+  return marker;
 }
 
 //------------ Заполнение списка карт автоматически ------------
@@ -949,12 +841,12 @@ function placeMarker(nick, nation, regimentFile, team, playerIndex){
   const marker = L.marker(pos, { icon, draggable: true }).addTo(map);
 
   // не добавляем tooltip (как ты попросил удалить)
-  marker.on('dragend', ()=> { try{ autoSave(); }catch(e){console.error(e);} });
+  marker.on('dragend', ()=> {
+    // можно отлавливать новые координаты при необходимости
+  });
 
   const entry = { id, team, playerIndex, nick, nation, regimentFile, marker };
   markerList.push(entry);
-  try{ autoSave(); }catch(e){}
-
 }
 
 //------------ Кнопки готовых символов ------------
@@ -1055,7 +947,10 @@ function loadEchelonState(echelon) {
 }
 
 //------------ Ластик и очистка ------------
-$id('btnEraser').addEventListener('click', ()=>{ if(!confirm('Удалить ВСЕ рисунки на карте?')) return; drawnItems.clearLayers(); try{ autoSave(); }catch(e){}; });
+$id('btnEraser').addEventListener('click', ()=>{
+  if(!confirm('Удалить ВСЕ рисунки на карте?')) return;
+  drawnItems.clearLayers();
+});
 
 $id('btnClearAll').addEventListener('click', ()=>{
   if(!confirm('Очистить карту полностью? (иконки и рисунки)')) return;
@@ -1378,7 +1273,10 @@ document.addEventListener('DOMContentLoaded', ()=>{
     }catch(e){ alert('Ошибка создания комнаты: '+e.message); console.error(e); }
   });
 
-  btnLeave.addEventListener('click', async ()=>{ await await leaveRoom(); btnLeave.style.display = 'none'; });
+  btnLeave.addEventListener('click', ()=>{
+    leaveRoom();
+    btnLeave.style.display = 'none';
+  });
 });
 
 //заглушка комнат ui
@@ -1393,20 +1291,3 @@ function updateRoomUI(){
     leaveBtn.style.display = 'none';
   }
 }
-
-
-// room panel extra wiring (delete room)
-document.addEventListener('DOMContentLoaded', ()=>{
-  const delBtn = document.getElementById('btnDeleteRoom');
-  const leaveBtn = document.getElementById('btnLeaveRoom');
-  const statusEl = document.getElementById('roomStatus');
-  const observer = new MutationObserver(()=>{
-    if(currentRoomId){ delBtn.style.display='inline-block'; leaveBtn.style.display='inline-block'; }
-    else { delBtn.style.display='none'; leaveBtn.style.display='none'; }
-  });
-  observer.observe(statusEl, { childList:true, subtree:true });
-  delBtn.addEventListener('click', async ()=>{
-    if(!currentRoomId) return alert('Не в комнате');
-    await deleteRoom(currentRoomId);
-  });
-});
