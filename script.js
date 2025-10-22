@@ -1290,4 +1290,28 @@ function updateRoomUI(){
     statusEl.textContent = 'Не в комнате';
     leaveBtn.style.display = 'none';
   }
+
+  try{ var del = document.getElementById('btnDeleteRoom'); if(del){ if(currentRoomId){ del.style.display='inline-block'; } else { del.style.display='none'; } } }catch(e){}
 }
+
+
+
+// Ensure delete room button exists and is wired
+document.addEventListener('DOMContentLoaded', function(){
+  try{
+    var panel = document.getElementById('room-panel');
+    if(panel && !document.getElementById('btnDeleteRoom')){
+      var row = document.createElement('div');
+      row.className = 'room-row';
+      var del = document.createElement('button');
+      del.id = 'btnDeleteRoom';
+      del.textContent = 'Удалить комнату';
+      del.style.display = 'none';
+      del.addEventListener('click', async function(){ if(!currentRoomId) return alert('Не в комнате'); await deleteRoom(currentRoomId); });
+      row.appendChild(del);
+      // place before status
+      var status = document.getElementById('roomStatus');
+      if(status && status.parentNode) status.parentNode.insertBefore(row, status);
+    }
+  }catch(e){ console.error('init btnDeleteRoom error', e); }
+});
