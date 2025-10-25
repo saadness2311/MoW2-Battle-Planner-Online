@@ -10,24 +10,8 @@
   <link rel="stylesheet" href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css" />
 
   <link rel="stylesheet" href="style.css" />
-
-  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 </head>
 <body>
-
-  <!-- ROOM PANEL -->
-  <div id="room-panel" class="room-panel collapsed">
-    <button id="room-toggle" class="room-toggle">Rooms ⌄</button>
-    <div class="room-content">
-      <div class="room-row"><label for="nickInput">Никнейм</label><input id="nickInput" placeholder="Введите ник"/></div>
-      <div class="room-row"><label for="newRoomName">Создать комнату</label><input id="newRoomName" placeholder="Название"/><button id="btnCreateRoom">Создать</button></div>
-      <div class="room-row"><label>Список комнат</label><div id="roomsList" class="rooms-list">Загрузка...</div><button id="btnRefreshRooms">Обновить</button></div>
-      <div class="room-row"><button id="btnLeaveRoom" style="display:none;">Выйти</button><button id="btnDeleteRoom" style="display:none;margin-left:8px;">Удалить</button></div>
-      <div class="room-status" id="roomStatus">Не в комнате</div>
-    </div>
-  </div>
-  <!-- END ROOM PANEL -->
-
   <div class="app">
     <aside class="sidebar">
       <h1>MoW2 Battle Planner</h1>
@@ -92,6 +76,7 @@
     </aside>
 
     <main class="map-area">
+  <div id="room-panel" class="room-panel collapsed"></div>
       <div id="map"></div>
     </main>
   </div>

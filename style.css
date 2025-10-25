@@ -317,5 +317,41 @@ button:hover {
   background-color: #191919; /* тёмный фон для опций */
   color: #fff;               /* белый текст для опций */
 }
-/* Supabase panel styles */
-.room-panel{position:fixed;top:10px;left:50%;transform:translateX(-50%);width:420px;background:rgba(240,240,240,0.95);border:1px solid #bbb;border-radius:8px;box-shadow:0 6px 18px rgba(0,0,0,0.12);font-family:inherit;z-index:10000;transition:transform 0.2s ease,max-height 0.2s ease;overflow:hidden}.room-panel.collapsed{max-height:36px}.room-toggle{width:100%;background:transparent;border:none;padding:8px 12px;text-align:center;font-weight:600;cursor:pointer;color:#333;background:linear-gradient(#f5f5f5,#eaeaea)}.room-content{padding:10px 12px;display:block}.room-row{margin-bottom:8px;display:flex;gap:8px;align-items:center}.room-row label{min-width:110px;font-size:13px;color:#444}.room-row input{flex:1;padding:6px 8px;border:1px solid #ccc;border-radius:4px;background:#f8f8f8;color:#222}.room-row button{padding:6px 8px;border-radius:4px;border:1px solid #999;background:#eee;cursor:pointer}.rooms-list{max-height:140px;overflow:auto;border:1px solid #ddd;padding:6px;background:#fafafa}.room-status{font-size:13px;color:#666;margin-top:6px;text-align:center}
+
+
+/* Room panel styling (centered, collapsible, grey) */
+#room-panel {
+  position: absolute;
+  left: 50%;
+  top: 8%;
+  transform: translateX(-50%);
+  width: 360px;
+  z-index: 9999;
+  font-family: Inter, system-ui, sans-serif;
+}
+#room-panel .room-panel-inner{
+  background: #2f2f2f;
+  color: #ddd;
+  border-radius: 8px;
+  box-shadow: 0 6px 18px rgba(0,0,0,0.45);
+  overflow: hidden;
+}
+.room-panel-header{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  padding:10px 12px;
+  background: #3b3b3b;
+  font-weight:600;
+}
+.room-panel-body{
+  padding:10px;
+}
+.room-item{ padding:8px; border-bottom:1px solid rgba(255,255,255,0.04); display:flex; justify-content:space-between; align-items:center;}
+.room-title{ font-size:14px; font-weight:600; }
+.room-meta{ font-size:12px; color:#bbb; margin-top:4px;}
+.room-actions button{ margin-left:6px; }
+.room-create input{ width: calc(100% - 12px); margin-bottom:6px; padding:8px; border-radius:6px; border:1px solid #444; background:#222; color:#eee;}
+.room-create button{ padding:8px 10px; border-radius:6px; background:#5a5a5a; border:none; color:#fff;}
+#room-panel.collapsed .room-panel-body{ display:none; }
+.toggle-btn{ background:transparent; border:none; color:#ddd; cursor:pointer; font-size:14px;}
