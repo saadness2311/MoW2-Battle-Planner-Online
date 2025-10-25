@@ -1,154 +1,251 @@
-let firebaseApp = null;
-let firebaseDb = null;
+/*
+  firebase-sync.js
+  Lightweight Firebase Realtime Database integration for multi-user sync.
+  - Requires Firebase SDKs (compat) included in the page.
+  - Configure firebaseConfig below (replace with your project's credentials).
+  - Implements rooms UI, room creation/joining, participants presence,
+    and entity sync under /rooms/{roomId}/entities/{entityId}.
+*/
 
-function initFirebase() {
-  if (typeof firebase === 'undefined') return false;
-  if (firebase.apps?.length > 0) {
-    firebaseApp = firebase.app();
-    firebaseDb = firebase.database();
-    console.log("Firebase connected");
-    return true;
+const FIREBASE_CONFIG = {
+  apiKey: "AIzaSyBRbEyiNS5lFfk6YApSM1Xt30I33uW_mo8",
+  authDomain: "mow2-battle-planner.firebaseapp.com",
+  databaseURL: "https://mow2-battle-planner-default-rtdb.firebaseio.com",
+  projectId: "mow2-battle-planner",
+  storageBucket: "mow2-battle-planner.firebasestorage.app",
+  messagingSenderId: "131172830575",
+  appId: "1:131172830575:web:fff7cecadd4e62830fac9a",
+  measurementId: "G-CFZTLVEYW0"
+};
+
+// initialize firebase (compat)
+let firebaseApp, firebaseDb;
+try {
+  firebaseApp = firebase.initializeApp(FIREBASE_CONFIG);
+  firebaseDb = firebase.database();
+} catch(e){
+  console.warn("Firebase init error", e);
+}
+
+const ROOM_PANEL_HTML = `
+  <div class="room-panel-inner">
+    <div class="room-panel-header">
+      <strong>Комнаты</strong>
+      <button id="room-panel-toggle" class="toggle-btn">▾</button>
+    </div>
+    <div id="room-panel-body" class="room-panel-body">
+      <div id="room-list"></div>
+      <hr/>
+      <div class="room-create">
+        <input id="room-name" placeholder="Название комнаты"/>
+        <input id="room-pass" placeholder="Пароль (опционально)"/>
+        <input id="my-nick" placeholder="Никнейм"/>
+        <button id="btn-create-room">Создать</button>
+      </div>
+      <div style="margin-top:6px;">
+        <button id="btn-refresh-rooms">Обновить</button>
+        <button id="btn-leave-room" style="display:none">Выйти</button>
+      </div>
+    </div>
+  </div>
+`;
+
+// Ждём загрузки DOM перед добавлением UI
+window.addEventListener('DOMContentLoaded', () => {
+  const panel = document.getElementById('room-panel');
+  if(panel){
+    panel.innerHTML = ROOM_PANEL_HTML;
   }
-  return false;
-}
-if (!initFirebase()) setTimeout(initFirebase, 100);
 
-// === ROOM UI (оставляем как есть) ===
-const ROOM_PANEL_HTML = `...`; // (всё как у тебя)
-document.getElementById('room-panel').innerHTML = ROOM_PANEL_HTML;
-// ... (весь код панели — не меняем)
+  // simple styling class toggles handled by style.css (we'll rely on existing)
+  const roomListEl = document.getElementById('room-list');
+  const btnCreateRoom = document.getElementById('btn-create-room');
+  const btnRefresh = document.getElementById('btn-refresh-rooms');
+  const btnLeave = document.getElementById('btn-leave-room');
+  const roomNameInput = document.getElementById('room-name');
+  const roomPassInput = document.getElementById('room-pass');
+  const nickInput = document.getElementById('my-nick');
+  const toggleBtn = document.getElementById('room-panel-toggle');
 
-// === UID & NICK ===
-let myUid = localStorage.getItem('mw2_uid') || ('uid_' + Math.random().toString(36).slice(2,9));
-localStorage.setItem('mw2_uid', myUid);
-let currentNick = localStorage.getItem('mw2_nick') || '';
-document.getElementById('my-nick').value = currentNick;
+  let currentRoomId = null;
+  let currentNick = localStorage.getItem('mw2_nick') || '';
+  if(nickInput) nickInput.value = currentNick;
 
-// === ГЛОБАЛЬНЫЕ ФУНКЦИИ ДЛЯ script.js ===
-window.firebaseCreateEntity = function(entity, echelon = 1) {
-  if (!firebaseDb || !currentRoomId) return;
-  const path = `rooms/${currentRoomId}/echelons/${echelon}/entities/${entity.id}`;
-  const payload = {
-    id: entity.id,
-    type: entity.type,
-    data: entity.data,
-    updatedAt: entity.updatedAt || Date.now(),
-    echelon: echelon
-  };
-  return firebaseDb.ref(path).set(payload);
-};
-
-window.firebaseUpdateEntity = function(id, partial, echelon = 1) {
-  if (!firebaseDb || !currentRoomId) return;
-  const path = `rooms/${currentRoomId}/echelons/${echelon}/entities/${id}/data`;
-  const update = { ...partial, updatedAt: Date.now() };
-  return firebaseDb.ref(path).update(update);
-};
-
-window.firebaseDeleteEntity = function(id, echelon = 1) {
-  if (!firebaseDb || !currentRoomId) return;
-  const path = `rooms/${currentRoomId}/echelons/${echelon}/entities/${id}`;
-  return firebaseDb.ref(path).remove();
-};
-
-// === УНИВЕРСАЛЬНОЕ ЧТЕНИЕ (поддержка обеих структур) ===
-let entitiesRef = null;
-let participantsRef = null;
-let currentRoomId = null;
-
-function unsubscribeRoom() {
-  if (entitiesRef) entitiesRef.off();
-  if (participantsRef) participantsRef.off();
-  window.dispatchEvent(new CustomEvent('remoteRoomLeft'));
-}
-
-function subscribeRoom(roomId) {
-  unsubscribeRoom();
-  currentRoomId = roomId;
-
-  participantsRef = firebaseDb.ref(`rooms/${roomId}/participants`);
-  participantsRef.on('value', snap => {
-    const parts = snap.val() || {};
-    window.dispatchEvent(new CustomEvent('remoteParticipants', { detail: { participants: parts } }));
+  toggleBtn && toggleBtn.addEventListener('click', ()=>{
+    const p = document.getElementById('room-panel');
+    p.classList.toggle('collapsed');
   });
 
-  // === ГЛАВНОЕ: УНИВЕРСАЛЬНЫЙ СЛУШАТЕЛЬ ===
-  const roomRef = firebaseDb.ref(`rooms/${roomId}`);
+  // generate simple uid and persist
+  let myUid = localStorage.getItem('mw2_uid');
+  if(!myUid){
+    myUid = 'uid_'+Math.random().toString(36).slice(2,9);
+    localStorage.setItem('mw2_uid', myUid);
+  }
 
-  // 1. Новая структура: echelons -> {1: {entities}, 2: {...}}
-  const echelonsRef = roomRef.child('echelons');
-  echelonsRef.on('child_added', handleEchelonChange);
-  echelonsRef.on('child_changed', handleEchelonChange);
-  echelonsRef.on('child_removed', snap => {
-    const echelonId = snap.key;
-    console.log('Echelon removed:', echelonId);
-  });
-
-  // 2. Старая структура: entities напрямую
-  const legacyRef = roomRef.child('entities');
-  legacyRef.on('child_added', snap => {
-    const entity = snap.val();
-    if (!entity || !entity.id) return;
-    entity.echelon = 1; // по умолчанию
-    window.dispatchEvent(new CustomEvent('remoteEntityAdded', { detail: { entity } }));
-  });
-  legacyRef.on('child_changed', snap => {
-    const entity = snap.val();
-    if (!entity || !entity.id) return;
-    entity.echelon = 1;
-    window.dispatchEvent(new CustomEvent('remoteEntityChanged', { detail: { entity } }));
-  });
-  legacyRef.on('child_removed', snap => {
-    const id = snap.key;
-    window.dispatchEvent(new CustomEvent('remoteEntityRemoved', { detail: { id } }));
-  });
-
-  entitiesRef = { echelons: echelonsRef, legacy: legacyRef };
-}
-
-function handleEchelonChange(snap) {
-  const echelonId = parseInt(snap.key);
-  if (isNaN(echelonId)) return;
-
-  const entitiesSnap = snap.val();
-  if (!entitiesSnap || typeof entitiesSnap !== 'object') return;
-
-  Object.entries(entitiesSnap).forEach(([entityId, entityVal]) => {
-    if (!entityVal || !entityVal.id) return;
-
-    const entity = {
-      id: entityVal.id,
-      type: entityVal.type,
-      data: entityVal.data || entityVal,
-      updatedAt: entityVal.updatedAt || Date.now(),
-      echelon: echelonId
+  // firebase helper wrappers exposed to global (will be used by script.js)
+  window.firebaseCreateEntity = function(entity){
+    if(!firebaseDb || !currentRoomId) return;
+    const ref = firebaseDb.ref(`rooms/${currentRoomId}/entities/${entity.id}`);
+    const payload = {
+      id: entity.id,
+      type: entity.type || 'unknown',
+      data: entity,
+      updatedAt: Date.now()
     };
+    return ref.set(payload);
+  };
+  window.firebaseUpdateEntity = function(id, partial){
+    if(!firebaseDb || !currentRoomId || !id) return;
+    const ref = firebaseDb.ref(`rooms/${currentRoomId}/entities/${id}/data`);
+    const toSet = Object.assign({}, partial, { updatedAt: Date.now() });
+    return ref.update(toSet);
+  };
+  window.firebaseDeleteEntity = function(id){
+    if(!firebaseDb || !currentRoomId || !id) return;
+    const ref = firebaseDb.ref(`rooms/${currentRoomId}/entities/${id}`);
+    return ref.remove();
+  };
 
-    const eventType = snap.type === 'child_added' ? 'remoteEntityAdded' : 'remoteEntityChanged';
-    window.dispatchEvent(new CustomEvent(eventType, { detail: { entity } }));
+  // rooms listing and management
+  async function refreshRooms(){
+    if(!firebaseDb){ roomListEl.innerHTML = '<div class="error">Firebase не настроен</div>'; return; }
+    const snap = await firebaseDb.ref('rooms').once('value');
+    const rooms = snap.val() || {};
+    roomListEl.innerHTML = '';
+    Object.entries(rooms).forEach(([rid, room])=>{
+      const div = document.createElement('div');
+      div.className = 'room-item';
+      div.innerHTML = `<div class="room-title">${escapeHtml(room.name||rid)}</div>
+        <div class="room-meta">Пароль: ${room.password? 'Да':'Нет'} · Участников: <span class="room-count">?</span></div>
+        <div class="room-actions">
+          <button class="join-room" data-rid="${rid}">Войти</button>
+          <button class="del-room" data-rid="${rid}">Удалить</button>
+        </div>`;
+      roomListEl.appendChild(div);
+      // fetch participants count
+      firebaseDb.ref(`rooms/${rid}/participants`).once('value').then(s=> {
+        const c = s.numChildren();
+        div.querySelector('.room-count').textContent = c;
+      });
+    });
+    if(Object.keys(rooms).length===0) roomListEl.innerHTML = '<div class="muted">Нет комнат. Создайте первую.</div>';
+  }
+  btnRefresh && btnRefresh.addEventListener('click', refreshRooms);
+
+  // create room
+  btnCreateRoom && btnCreateRoom.addEventListener('click', async ()=>{
+    const name = roomNameInput.value.trim() || 'Комната без названия';
+    const pass = roomPassInput.value;
+    const nick = nickInput.value.trim() || ('Игрок_' + Math.random().toString(36).slice(2,5));
+    localStorage.setItem('mw2_nick', nick);
+    if(!firebaseDb) return alert('Firebase не настроен');
+    const newRoomRef = firebaseDb.ref('rooms').push();
+    const rid = newRoomRef.key;
+    await newRoomRef.set({ name, password: pass||'', createdAt: Date.now() });
+    await refreshRooms();
+    joinRoom(rid, pass, nick);
   });
-}
 
-// === Присоединение к комнате ===
-async function joinRoom(roomId, pass, nick) {
-  const roomSnap = await firebaseDb.ref(`rooms/${roomId}`).once('value');
-  if (!roomSnap.exists()) return alert('Комната не найдена');
-  const room = roomSnap.val();
-  if (room.password && room.password !== pass) return alert('Неверный пароль');
+  // join room
+  async function joinRoom(roomId, pass, nick){
+    if(!firebaseDb) return alert('Firebase не настроен');
+    // validate password
+    const roomSnap = await firebaseDb.ref(`rooms/${roomId}`).once('value');
+    if(!roomSnap.exists()) return alert('Комната не найдена');
+    const room = roomSnap.val();
+    if(room.password && room.password !== (pass||'')) return alert('Неверный пароль');
+    currentRoomId = roomId;
+    if(nick) { currentNick = nick; localStorage.setItem('mw2_nick', nick); }
+    // add participant
+    const partRef = firebaseDb.ref(`rooms/${currentRoomId}/participants/${myUid}`);
+    await partRef.set({ nick: currentNick || nickInput.value || 'Anon', joinedAt: Date.now() });
+    partRef.onDisconnect().remove();
+    // show leave button
+    btnLeave.style.display = 'inline-block';
+    subscribeRoom(currentRoomId);
+  }
 
-  currentRoomId = roomId;
-  currentNick = nick || 'Anon';
-  localStorage.setItem('mw2_nick', currentNick);
+  // join handlers on clicks in room list
+  roomListEl.addEventListener('click', (ev)=>{
+    const btn = ev.target.closest('button');
+    if(!btn) return;
+    const rid = btn.dataset.rid;
+    if(btn.classList.contains('join-room')){
+      const pass = prompt('Пароль комнаты (если есть):') || '';
+      joinRoom(rid, pass, nickInput.value.trim() || currentNick);
+    } else if(btn.classList.contains('del-room')){
+      if(!confirm('Удалить комнату? Эта операция удалит все данные комнаты.')) return;
+      firebaseDb.ref(`rooms/${rid}`).remove();
+      refreshRooms();
+    }
+  });
 
-  const partRef = firebaseDb.ref(`rooms/${roomId}/participants/${myUid}`);
-  await partRef.set({ nick: currentNick, joinedAt: Date.now() });
-  partRef.onDisconnect().remove();
+  btnLeave.addEventListener('click', ()=>{
+    if(!currentRoomId) return;
+    firebaseDb.ref(`rooms/${currentRoomId}/participants/${myUid}`).remove();
+    unsubscribeRoom();
+    currentRoomId = null;
+    btnLeave.style.display='none';
+    refreshRooms();
+  });
 
-  document.getElementById('btn-leave-room').style.display = 'inline-block';
-  subscribeRoom(roomId);
-}
+  // subscription to room participants and entities
+  let entitiesRef = null, participantsRef = null;
+  function unsubscribeRoom(){
+    if(entitiesRef) entitiesRef.off();
+    if(participantsRef) participantsRef.off();
+    // dispatch event to clear local entities
+    window.dispatchEvent(new CustomEvent('remoteRoomLeft', { detail: { roomId: currentRoomId } }));
+  }
 
-// === Остальной UI (создание, удаление, refresh) — без изменений ===
-// (всё как у тебя — оставь)
+  function subscribeRoom(rid){
+    // unsubscribe previous
+    unsubscribeRoom();
+    currentRoomId = rid;
+    entitiesRef = firebaseDb.ref(`rooms/${rid}/entities`);
+    participantsRef = firebaseDb.ref(`rooms/${rid}/participants`);
 
-setTimeout(refreshRooms, 300);
+    // participants listener -> update UI
+    participantsRef.on('value', snap=>{
+      const parts = snap.val() || {};
+      // update room item display or create one
+      // dispatch event
+      window.dispatchEvent(new CustomEvent('remoteParticipants', { detail: { participants: parts } }));
+    });
+
+    // entities child listeners
+    entitiesRef.on('child_added', snap=>{
+      const val = snap.val();
+      if(!val) return;
+      // dispatch event
+      window.dispatchEvent(new CustomEvent('remoteEntityAdded', { detail: { entity: val.data || val } }));
+    });
+    entitiesRef.on('child_changed', snap=>{
+      const val = snap.val();
+      if(!val) return;
+      window.dispatchEvent(new CustomEvent('remoteEntityChanged', { detail: { entity: val.data || val } }));
+    });
+    entitiesRef.on('child_removed', snap=>{
+      const val = snap.val();
+      if(!val) return;
+      window.dispatchEvent(new CustomEvent('remoteEntityRemoved', { detail: { id: snap.key } }));
+    });
+  }
+
+  // initial load
+  setTimeout(()=> {
+    refreshRooms();
+    // if user has last room in localStorage, try to rejoin
+    const lastRoom = localStorage.getItem('mw2_last_room');
+    if(lastRoom) {
+      // try to autojoin without password; user may need to join manually
+      // joinRoom(lastRoom, '', nickInput.value.trim()||currentNick);
+    }
+  }, 200);
+
+// small helper
+function escapeHtml(s){ return String(s||'').replace(/[&<>"']/g, c=> ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+console.log("Connecting to Firebase...", FIREBASE_CONFIG.databaseURL);
+});
