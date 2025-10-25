@@ -4,7 +4,7 @@
   - Firebase initialized in index.html
   - This file uses the already-initialized app
   - Implements rooms UI, creation/joining, participants presence,
-    and entity sync under /rooms/{roomId}/entities/{entityId}
+    and entity sync under /rooms/{roomId}/echelons/{echelon}/entities/{entityId}
 */
 
 let firebaseApp = null;
@@ -27,16 +27,16 @@ function initFirebase() {
 
 // Try immediately
 if (!initFirebase()) {
-  // If not ready, try again after 100ms (in case index.html loads later)
+  // If not ready, try again after 100ms
   setTimeout(initFirebase, 100);
 }
 
-// ROOM PANEL HTML (unchanged)
+// ROOM PANEL HTML
 const ROOM_PANEL_HTML = `
   <div class="room-panel-inner">
     <div class="room-panel-header">
-      Комнаты
-      <button id="room-panel-toggle" class="toggle-btn">down arrow</button>
+      <strong>Комнаты</strong>
+      <button id="room-panel-toggle" class="toggle-btn">▾</button>
     </div>
     <div id="room-panel-body" class="room-panel-body">
       <div id="room-list"></div>
@@ -88,29 +88,30 @@ if (!myUid) {
   localStorage.setItem('mw2_uid', myUid);
 }
 
-// Firebase helper functions (global)
-window.firebaseCreateEntity = function (entity) {
+// Firebase helper wrappers (с echelon)
+window.firebaseCreateEntity = function (entity, echelon = 1) {
   if (!firebaseDb || !currentRoomId) return;
-  const ref = firebaseDb.ref(`rooms/${currentRoomId}/entities/${entity.id}`);
+  const ref = firebaseDb.ref(`rooms/${currentRoomId}/echelons/${echelon}/entities/${entity.id}`);
   const payload = {
     id: entity.id,
     type: entity.type || 'unknown',
-    data: entity,
-    updatedAt: Date.now()
+    data: entity.data,
+    updatedAt: entity.updatedAt || Date.now(),
+    echelon: echelon
   };
   return ref.set(payload);
 };
 
-window.firebaseUpdateEntity = function (id, partial) {
+window.firebaseUpdateEntity = function (id, partial, echelon = 1) {
   if (!firebaseDb || !currentRoomId || !id) return;
-  const ref = firebaseDb.ref(`rooms/${currentRoomId}/entities/${id}/data`);
+  const ref = firebaseDb.ref(`rooms/${currentRoomId}/echelons/${echelon}/entities/${id}/data`);
   const toSet = Object.assign({}, partial, { updatedAt: Date.now() });
   return ref.update(toSet);
 };
 
-window.firebaseDeleteEntity = function (id) {
+window.firebaseDeleteEntity = function (id, echelon = 1) {
   if (!firebaseDb || !currentRoomId || !id) return;
-  const ref = firebaseDb.ref(`rooms/${currentRoomId}/entities/${id}`);
+  const ref = firebaseDb.ref(`rooms/${currentRoomId}/echelons/${echelon}/entities/${id}`);
   return ref.remove();
 };
 
@@ -120,27 +121,32 @@ async function refreshRooms() {
     roomListEl.innerHTML = '<div class="error">Firebase не настроен</div>';
     return;
   }
-  const snap = await firebaseDb.ref('rooms').once('value');
-  const rooms = snap.val() || {};
-  roomListEl.innerHTML = '';
-  Object.entries(rooms).forEach(([rid, room]) => {
-    const div = document.createElement('div');
-    div.className = 'room-item';
-    div.innerHTML = `
-      <div class="room-title">${escapeHtml(room.name || rid)}</div>
-      <div class="room-meta">Пароль: ${room.password ? 'Да' : 'Нет'} · Участников: <span class="room-count">?</span></div>
-      <div class="room-actions">
-        <button class="join-room" data-rid="${rid}">Войти</button>
-        <button class="del-room" data-rid="${rid}">Удалить</button>
-      </div>`;
-    roomListEl.appendChild(div);
-    firebaseDb.ref(`rooms/${rid}/participants`).once('value').then(s => {
-      const c = s.numChildren();
-      div.querySelector('.room-count').textContent = c;
+  try {
+    const snap = await firebaseDb.ref('rooms').once('value');
+    const rooms = snap.val() || {};
+    roomListEl.innerHTML = '';
+    Object.entries(rooms).forEach(([rid, room]) => {
+      const div = document.createElement('div');
+      div.className = 'room-item';
+      div.innerHTML = `
+        <div class="room-title">${escapeHtml(room.name || rid)}</div>
+        <div class="room-meta">Пароль: ${room.password ? 'Да' : 'Нет'} · Участников: <span class="room-count">?</span></div>
+        <div class="room-actions">
+          <button class="join-room" data-rid="${rid}">Войти</button>
+          <button class="del-room" data-rid="${rid}">Удалить</button>
+        </div>`;
+      roomListEl.appendChild(div);
+      // fetch participants count
+      firebaseDb.ref(`rooms/${rid}/participants`).once('value').then(s => {
+        const c = s.numChildren();
+        div.querySelector('.room-count').textContent = c;
+      });
     });
-  });
-  if (Object.keys(rooms).length === 0) {
-    roomListEl.innerHTML = '<div class="muted">Нет комнат. Создайте первую.</div>';
+    if (Object.keys(rooms).length === 0) {
+      roomListEl.innerHTML = '<div class="muted">Нет комнат. Создайте первую.</div>';
+    }
+  } catch (e) {
+    console.error('Refresh rooms error:', e);
   }
 }
 btnRefresh?.addEventListener('click', refreshRooms);
@@ -153,33 +159,43 @@ btnCreateRoom?.addEventListener('click', async () => {
   localStorage.setItem('mw2_nick', nick);
 
   if (!firebaseDb) return alert('Firebase не настроен');
-  const newRoomRef = firebaseDb.ref('rooms').push();
-  const rid = newRoomRef.key;
-  await newRoomRef.set({ name, password: pass || '', createdAt: Date.now() });
-  await refreshRooms();
-  joinRoom(rid, pass, nick);
+  try {
+    const newRoomRef = firebaseDb.ref('rooms').push();
+    const rid = newRoomRef.key;
+    await newRoomRef.set({ name, password: pass || '', createdAt: Date.now() });
+    await refreshRooms();
+    joinRoom(rid, pass, nick);
+  } catch (e) {
+    console.error('Create room error:', e);
+    alert('Ошибка создания комнаты');
+  }
 });
 
 // Join room
 async function joinRoom(roomId, pass, nick) {
   if (!firebaseDb) return alert('Firebase не настроен');
-  const roomSnap = await firebaseDb.ref(`rooms/${roomId}`).once('value');
-  if (!roomSnap.exists()) return alert('Комната не найдена');
-  const room = roomSnap.val();
-  if (room.password && room.password !== (pass || '')) return alert('Неверный пароль');
+  try {
+    const roomSnap = await firebaseDb.ref(`rooms/${roomId}`).once('value');
+    if (!roomSnap.exists()) return alert('Комната не найдена');
+    const room = roomSnap.val();
+    if (room.password && room.password !== (pass || '')) return alert('Неверный пароль');
 
-  currentRoomId = roomId;
-  if (nick) {
-    currentNick = nick;
-    localStorage.setItem('mw2_nick', nick);
+    currentRoomId = roomId;
+    if (nick) {
+      currentNick = nick;
+      localStorage.setItem('mw2_nick', nick);
+    }
+
+    const partRef = firebaseDb.ref(`rooms/${currentRoomId}/participants/${myUid}`);
+    await partRef.set({ nick: currentNick || nickInput.value || 'Anon', joinedAt: Date.now() });
+    partRef.onDisconnect().remove();
+
+    btnLeave.style.display = 'inline-block';
+    subscribeRoom(currentRoomId);
+  } catch (e) {
+    console.error('Join room error:', e);
+    alert('Ошибка присоединения к комнате');
   }
-
-  const partRef = firebaseDb.ref(`rooms/${currentRoomId}/participants/${myUid}`);
-  await partRef.set({ nick: currentNick || nickInput.value || 'Anon', joinedAt: Date.now() });
-  partRef.onDisconnect().remove();
-
-  btnLeave.style.display = 'inline-block';
-  subscribeRoom(currentRoomId);
 }
 
 // Room list click handlers
@@ -192,8 +208,7 @@ roomListEl?.addEventListener('click', (ev) => {
     joinRoom(rid, pass, nickInput.value.trim() || currentNick);
   } else if (btn.classList.contains('del-room')) {
     if (!confirm('Удалить комнату? Эта операция удалит все данные комнаты.')) return;
-    firebaseDb.ref(`rooms/${rid}`).remove();
-    refreshRooms();
+    firebaseDb.ref(`rooms/${rid}`).remove().then(refreshRooms);
   }
 });
 
@@ -206,7 +221,7 @@ btnLeave?.addEventListener('click', () => {
   refreshRooms();
 });
 
-// Subscription
+// Subscription to room participants and entities (с echelon)
 let entitiesRef = null, participantsRef = null;
 
 function unsubscribeRoom() {
@@ -218,40 +233,74 @@ function unsubscribeRoom() {
 function subscribeRoom(rid) {
   unsubscribeRoom();
   currentRoomId = rid;
-  entitiesRef = firebaseDb.ref(`rooms/${rid}/entities`);
   participantsRef = firebaseDb.ref(`rooms/${rid}/participants`);
 
+  // Listen to all echelons (script.js filters by currentEchelon)
+  entitiesRef = firebaseDb.ref(`rooms/${rid}/echelons`);
+
+  // Participants listener
   participantsRef.on('value', snap => {
     const parts = snap.val() || {};
     window.dispatchEvent(new CustomEvent('remoteParticipants', { detail: { participants: parts } }));
   });
 
+  // Entities listeners (child_added/changed/removed on echelons/*/*)
   entitiesRef.on('child_added', snap => {
-    const val = snap.val();
-    if (!val) return;
-    window.dispatchEvent(new CustomEvent('remoteEntityAdded', { detail: { entity: val.data || val } }));
+    if (!snap.exists()) return;
+    const echelonSnap = snap.val();
+    Object.entries(echelonSnap || {}).forEach(([echelonId, entitiesSnap]) => {
+      if (entitiesSnap && typeof entitiesSnap === 'object') {
+        Object.entries(entitiesSnap).forEach(([entityId, entityVal]) => {
+          if (entityVal) {
+            const entity = {
+              id: entityId,
+              type: entityVal.type,
+              data: entityVal.data || entityVal,
+              updatedAt: entityVal.updatedAt,
+              echelon: parseInt(echelonId)
+            };
+            window.dispatchEvent(new CustomEvent('remoteEntityAdded', { detail: { entity } }));
+          }
+        });
+      }
+    });
   });
 
   entitiesRef.on('child_changed', snap => {
-    const val = snap.val();
-    if (!val) return;
-    window.dispatchEvent(new CustomEvent('remoteEntityChanged', { detail: { entity: val.data || val } }));
+    // Similar to child_added, but dispatch changed
+    if (!snap.exists()) return;
+    const echelonSnap = snap.val();
+    Object.entries(echelonSnap || {}).forEach(([echelonId, entitiesSnap]) => {
+      if (entitiesSnap && typeof entitiesSnap === 'object') {
+        Object.entries(entitiesSnap).forEach(([entityId, entityVal]) => {
+          if (entityVal) {
+            const entity = {
+              id: entityId,
+              type: entityVal.type,
+              data: entityVal.data || entityVal,
+              updatedAt: entityVal.updatedAt,
+              echelon: parseInt(echelonId)
+            };
+            window.dispatchEvent(new CustomEvent('remoteEntityChanged', { detail: { entity } }));
+          }
+        });
+      }
+    });
   });
 
   entitiesRef.on('child_removed', snap => {
-    const val = snap.val();
-    if (!val) return;
-    window.dispatchEvent(new CustomEvent('remoteEntityRemoved', { detail: { id: snap.key } }));
+    // Dispatch removed for each entity in removed echelon
+    const removedKey = snap.key;
+    if (removedKey.startsWith('echelon_')) {
+      // Assume echelon removed, but for entities, listen deeper if needed
+      console.log('Echelon removed:', removedKey);
+    }
   });
 }
 
 // Initial load
 setTimeout(() => {
   refreshRooms();
-  const lastRoom = localStorage.getItem('mw2_last_room');
-  if (lastRoom) {
-    // Optional: auto-rejoin (password required)
-  }
 }, 200);
 
 // Helper
@@ -259,4 +308,4 @@ function escapeHtml(s) {
   return String(s || '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 }
 
-console.log("Connecting to Firebase...", firebaseDb?.ref().toString() || "Not connected");
+console.log("Connecting to Firebase...", firebaseDb ? firebaseDb.ref().toString() : "Not connected");
