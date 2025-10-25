@@ -1359,3 +1359,29 @@ function saveMapAsScreenshot() {
 
 // Привязка к кнопке
 document.getElementById('btnSaveImage').addEventListener('click', saveMapAsScreenshot);
+
+window.addEventListener('remoteEntityAdded', (e)=> {
+  const entity = e.detail.entity;
+  // Создаём маркер из entity (пример для player_marker)
+  if (entity.type === 'player_marker') {
+    const data = entity.data;
+    const marker = L.marker(data.latlng, { icon: createRegDivIcon(data.ownerNick, data.nation, data.regimentFile, data.team), draggable: true }).addTo(map);
+    marker.on('dragend', () => firebaseUpdateEntity(entity.id, { latlng: marker.getLatLng() }));
+    markerList.push({ id: entity.id, ...data, marker });
+  } // Добавь для simple_symbol и drawing аналогично
+});
+window.addEventListener('remoteEntityChanged', (e)=> {
+  const entity = e.detail.entity;
+  const existing = markerList.find(m => m.id === entity.id);
+  if (existing) existing.marker.setLatLng(entity.data.latlng);
+  // Аналогично для simpleMarkers и drawnItems
+});
+window.addEventListener('remoteEntityRemoved', (e)=> {
+  const id = e.detail.id;
+  const existingIndex = markerList.findIndex(m => m.id === id);
+  if (existingIndex !== -1) {
+    map.removeLayer(markerList[existingIndex].marker);
+    markerList.splice(existingIndex, 1);
+  }
+  // Аналогично для simpleMarkers и drawnItems
+});

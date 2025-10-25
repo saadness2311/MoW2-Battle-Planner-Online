@@ -21,7 +21,7 @@ const FIREBASE_CONFIG = {
 // initialize firebase (compat)
 let firebaseApp, firebaseDb;
 try {
-  firebaseApp = firebase.initializeApp(FIREBASE_CONFIG);
+  firebaseApp = firebase.app('[DEFAULT]'); // Используем существующий app из index.html
   firebaseDb = firebase.database();
 } catch(e){
   console.warn("Firebase init error", e);
@@ -50,14 +50,12 @@ const ROOM_PANEL_HTML = `
   </div>
 `;
 
-// Ждём загрузки DOM перед добавлением UI
 window.addEventListener('DOMContentLoaded', () => {
   const panel = document.getElementById('room-panel');
   if(panel){
     panel.innerHTML = ROOM_PANEL_HTML;
   }
 
-  // simple styling class toggles handled by style.css (we'll rely on existing)
   const roomListEl = document.getElementById('room-list');
   const btnCreateRoom = document.getElementById('btn-create-room');
   const btnRefresh = document.getElementById('btn-refresh-rooms');
@@ -76,14 +74,12 @@ window.addEventListener('DOMContentLoaded', () => {
     p.classList.toggle('collapsed');
   });
 
-  // generate simple uid and persist
   let myUid = localStorage.getItem('mw2_uid');
   if(!myUid){
     myUid = 'uid_'+Math.random().toString(36).slice(2,9);
     localStorage.setItem('mw2_uid', myUid);
   }
 
-  // firebase helper wrappers exposed to global (will be used by script.js)
   window.firebaseCreateEntity = function(entity){
     if(!firebaseDb || !currentRoomId) return;
     const ref = firebaseDb.ref(`rooms/${currentRoomId}/entities/${entity.id}`);
@@ -107,7 +103,6 @@ window.addEventListener('DOMContentLoaded', () => {
     return ref.remove();
   };
 
-  // rooms listing and management
   async function refreshRooms(){
     if(!firebaseDb){ roomListEl.innerHTML = '<div class="error">Firebase не настроен</div>'; return; }
     const snap = await firebaseDb.ref('rooms').once('value');
@@ -133,7 +128,6 @@ window.addEventListener('DOMContentLoaded', () => {
   }
   btnRefresh && btnRefresh.addEventListener('click', refreshRooms);
 
-  // create room
   btnCreateRoom && btnCreateRoom.addEventListener('click', async ()=>{
     const name = roomNameInput.value.trim() || 'Комната без названия';
     const pass = roomPassInput.value;
@@ -147,26 +141,21 @@ window.addEventListener('DOMContentLoaded', () => {
     joinRoom(rid, pass, nick);
   });
 
-  // join room
   async function joinRoom(roomId, pass, nick){
     if(!firebaseDb) return alert('Firebase не настроен');
-    // validate password
     const roomSnap = await firebaseDb.ref(`rooms/${roomId}`).once('value');
     if(!roomSnap.exists()) return alert('Комната не найдена');
     const room = roomSnap.val();
     if(room.password && room.password !== (pass||'')) return alert('Неверный пароль');
     currentRoomId = roomId;
     if(nick) { currentNick = nick; localStorage.setItem('mw2_nick', nick); }
-    // add participant
     const partRef = firebaseDb.ref(`rooms/${currentRoomId}/participants/${myUid}`);
     await partRef.set({ nick: currentNick || nickInput.value || 'Anon', joinedAt: Date.now() });
     partRef.onDisconnect().remove();
-    // show leave button
     btnLeave.style.display = 'inline-block';
     subscribeRoom(currentRoomId);
   }
 
-  // join handlers on clicks in room list
   roomListEl.addEventListener('click', (ev)=>{
     const btn = ev.target.closest('button');
     if(!btn) return;
@@ -190,35 +179,27 @@ window.addEventListener('DOMContentLoaded', () => {
     refreshRooms();
   });
 
-  // subscription to room participants and entities
   let entitiesRef = null, participantsRef = null;
   function unsubscribeRoom(){
     if(entitiesRef) entitiesRef.off();
     if(participantsRef) participantsRef.off();
-    // dispatch event to clear local entities
     window.dispatchEvent(new CustomEvent('remoteRoomLeft', { detail: { roomId: currentRoomId } }));
   }
 
   function subscribeRoom(rid){
-    // unsubscribe previous
     unsubscribeRoom();
     currentRoomId = rid;
     entitiesRef = firebaseDb.ref(`rooms/${rid}/entities`);
     participantsRef = firebaseDb.ref(`rooms/${rid}/participants`);
 
-    // participants listener -> update UI
     participantsRef.on('value', snap=>{
       const parts = snap.val() || {};
-      // update room item display or create one
-      // dispatch event
       window.dispatchEvent(new CustomEvent('remoteParticipants', { detail: { participants: parts } }));
     });
 
-    // entities child listeners
     entitiesRef.on('child_added', snap=>{
       const val = snap.val();
       if(!val) return;
-      // dispatch event
       window.dispatchEvent(new CustomEvent('remoteEntityAdded', { detail: { entity: val.data || val } }));
     });
     entitiesRef.on('child_changed', snap=>{
@@ -233,19 +214,17 @@ window.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  // initial load
   setTimeout(()=> {
     refreshRooms();
-    // if user has last room in localStorage, try to rejoin
     const lastRoom = localStorage.getItem('mw2_last_room');
     if(lastRoom) {
       // try to autojoin without password; user may need to join manually
       // joinRoom(lastRoom, '', nickInput.value.trim()||currentNick);
     }
   }, 200);
+});
 
 // small helper
 function escapeHtml(s){ return String(s||'').replace(/[&<>"']/g, c=> ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
 console.log("Connecting to Firebase...", FIREBASE_CONFIG.databaseURL);
-});
