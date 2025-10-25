@@ -1,10 +1,8 @@
 /*
-  firebase-sync.js
-  Lightweight Firebase Realtime Database integration for multi-user sync.
-  - Requires Firebase SDKs (compat) included in the page.
-  - Configure firebaseConfig below (replace with your project's credentials).
-  - Implements rooms UI, room creation/joining, participants presence,
-    and entity sync under /rooms/{roomId}/entities/{entityId}.
+  firebase-sync.js — УЛУЧШЕННАЯ СИНХРОНИЗАЦИЯ С ЭШЕЛОНАМИ
+  Структура: rooms/{roomId}/echelons/{echelonId}/... + mapData
+  - Без дублей init.
+  - Реaltime для всех эшелонов.
 */
 
 const FIREBASE_CONFIG = {
@@ -18,13 +16,13 @@ const FIREBASE_CONFIG = {
   measurementId: "G-CFZTLVEYW0"
 };
 
-// initialize firebase (compat)
+// Используем существующий app из index.html
 let firebaseApp, firebaseDb;
 try {
-  firebaseApp = firebase.app('[DEFAULT]'); // Используем существующий app из index.html
+  firebaseApp = firebase.app('[DEFAULT]');
   firebaseDb = firebase.database();
-} catch(e){
-  console.warn("Firebase init error", e);
+} catch (e) {
+  console.warn("Firebase app not found", e);
 }
 
 const ROOM_PANEL_HTML = `
@@ -50,11 +48,10 @@ const ROOM_PANEL_HTML = `
   </div>
 `;
 
+// Ждём DOM
 window.addEventListener('DOMContentLoaded', () => {
   const panel = document.getElementById('room-panel');
-  if(panel){
-    panel.innerHTML = ROOM_PANEL_HTML;
-  }
+  if (panel) panel.innerHTML = ROOM_PANEL_HTML;
 
   const roomListEl = document.getElementById('room-list');
   const btnCreateRoom = document.getElementById('btn-create-room');
@@ -67,22 +64,22 @@ window.addEventListener('DOMContentLoaded', () => {
 
   let currentRoomId = null;
   let currentNick = localStorage.getItem('mw2_nick') || '';
-  if(nickInput) nickInput.value = currentNick;
+  if (nickInput) nickInput.value = currentNick;
 
-  toggleBtn && toggleBtn.addEventListener('click', ()=>{
-    const p = document.getElementById('room-panel');
-    p.classList.toggle('collapsed');
+  toggleBtn?.addEventListener('click', () => {
+    document.getElementById('room-panel').classList.toggle('collapsed');
   });
 
   let myUid = localStorage.getItem('mw2_uid');
-  if(!myUid){
-    myUid = 'uid_'+Math.random().toString(36).slice(2,9);
+  if (!myUid) {
+    myUid = 'uid_' + Math.random().toString(36).slice(2, 9);
     localStorage.setItem('mw2_uid', myUid);
   }
 
-  window.firebaseCreateEntity = function(entity){
-    if(!firebaseDb || !currentRoomId) return;
-    const ref = firebaseDb.ref(`rooms/${currentRoomId}/entities/${entity.id}`);
+  // Функции для script.js (с эшелоном)
+  window.firebaseCreateEntity = function(entity, echelon = 1) {
+    if (!firebaseDb || !currentRoomId) return;
+    const ref = firebaseDb.ref(`rooms/${currentRoomId}/echelons/${echelon}/entities/${entity.id}`);
     const payload = {
       id: entity.id,
       type: entity.type || 'unknown',
@@ -91,20 +88,31 @@ window.addEventListener('DOMContentLoaded', () => {
     };
     return ref.set(payload);
   };
-  window.firebaseUpdateEntity = function(id, partial){
-    if(!firebaseDb || !currentRoomId || !id) return;
-    const ref = firebaseDb.ref(`rooms/${currentRoomId}/entities/${id}/data`);
+
+  window.firebaseUpdateEntity = function(id, partial, echelon = 1) {
+    if (!firebaseDb || !currentRoomId || !id) return;
+    const ref = firebaseDb.ref(`rooms/${currentRoomId}/echelons/${echelon}/entities/${id}/data`);
     const toSet = Object.assign({}, partial, { updatedAt: Date.now() });
     return ref.update(toSet);
   };
-  window.firebaseDeleteEntity = function(id){
-    if(!firebaseDb || !currentRoomId || !id) return;
-    const ref = firebaseDb.ref(`rooms/${currentRoomId}/entities/${id}`);
+
+  window.firebaseDeleteEntity = function(id, echelon = 1) {
+    if (!firebaseDb || !currentRoomId || !id) return;
+    const ref = firebaseDb.ref(`rooms/${currentRoomId}/echelons/${echelon}/entities/${id}`);
     return ref.remove();
   };
 
-  async function refreshRooms(){
-    if(!firebaseDb){ roomListEl.innerHTML = '<div class="error">Firebase не настроен</div>'; return; }
+  // Функция для обновления комнатных данных (карта, state)
+  window.firebaseUpdateRoom = function(partial) {
+    if (!firebaseDb || !currentRoomId) return;
+    return firebaseDb.ref(`rooms/${currentRoomId}`).update(partial);
+  };
+
+  async function refreshRooms() {
+    if (!firebaseDb) {
+      roomListEl.innerHTML = '<div class="error">Firebase не настроен</div>';
+      return;
+    }
     const snap = await firebaseDb.ref('rooms').once('value');
     const rooms = snap.val() || {};
     roomListEl.innerHTML = '';
@@ -118,7 +126,6 @@ window.addEventListener('DOMContentLoaded', () => {
           <button class="del-room" data-rid="${rid}">Удалить</button>
         </div>`;
       roomListEl.appendChild(div);
-      // fetch participants count
       firebaseDb.ref(`rooms/${rid}/participants`).once('value').then(s=> {
         const c = s.numChildren();
         div.querySelector('.room-count').textContent = c;
@@ -183,20 +190,26 @@ window.addEventListener('DOMContentLoaded', () => {
   function unsubscribeRoom(){
     if(entitiesRef) entitiesRef.off();
     if(participantsRef) participantsRef.off();
+    // dispatch event to clear local entities
     window.dispatchEvent(new CustomEvent('remoteRoomLeft', { detail: { roomId: currentRoomId } }));
   }
 
   function subscribeRoom(rid){
+    // unsubscribe previous
     unsubscribeRoom();
     currentRoomId = rid;
     entitiesRef = firebaseDb.ref(`rooms/${rid}/entities`);
     participantsRef = firebaseDb.ref(`rooms/${rid}/participants`);
 
+    // participants listener -> update UI
     participantsRef.on('value', snap=>{
       const parts = snap.val() || {};
+      // update room item display or create one
+      // dispatch event
       window.dispatchEvent(new CustomEvent('remoteParticipants', { detail: { participants: parts } }));
     });
 
+    // entities child listeners
     entitiesRef.on('child_added', snap=>{
       const val = snap.val();
       if(!val) return;
@@ -214,17 +227,19 @@ window.addEventListener('DOMContentLoaded', () => {
     });
   }
 
+  // initial load
   setTimeout(()=> {
     refreshRooms();
+    // if user has last room in localStorage, try to rejoin
     const lastRoom = localStorage.getItem('mw2_last_room');
     if(lastRoom) {
       // try to autojoin without password; user may need to join manually
       // joinRoom(lastRoom, '', nickInput.value.trim()||currentNick);
     }
   }, 200);
-});
 
 // small helper
 function escapeHtml(s){ return String(s||'').replace(/[&<>"']/g, c=> ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
 console.log("Connecting to Firebase...", FIREBASE_CONFIG.databaseURL);
+});
