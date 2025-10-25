@@ -86,6 +86,24 @@
   <script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
 
+<script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
+<script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-database.js"></script>
+<script>
+  // Замени FIREBASE_CONFIG на свой реальный объект конфигурации
+  const firebaseConfig = {
+    apiKey: "AIzaSyBRbEyiNS5lFfk6YApSM1Xt30I33uW_mo8",
+    authDomain: "mow2-battle-planner.firebaseapp.com",
+    databaseURL: "https://mow2-battle-planner-default-rtdb.firebaseio.com",
+    projectId: "mow2-battle-planner",
+    storageBucket: "mow2-battle-planner.firebasestorage.app",
+    messagingSenderId: "131172830575",
+    appId: "1:131172830575:web:fff7cecadd4e62830fac9a",
+    measurementId: "G-CFZTLVEYW0"
+  };
+
+  firebase.initializeApp(firebaseConfig);
+  const db = firebase.database();
+</script>
 
   <script src="script.js"></script>
 </body>
