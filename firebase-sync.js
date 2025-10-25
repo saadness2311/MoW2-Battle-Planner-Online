@@ -15,7 +15,7 @@ const FIREBASE_CONFIG = {
   projectId: "mow2-battle-planner",
   storageBucket: "mow2-battle-planner.firebasestorage.app",
   messagingSenderId: "131172830575",
-  appId: "1:131172830575:web:fff7cecadd4e62830fac9a"
+  appId: "1:131172830575:web:fff7cecadd4e62830fac9a",
   measurementId: "G-CFZTLVEYW0"
 };
 
