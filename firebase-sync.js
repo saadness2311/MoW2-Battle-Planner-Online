@@ -246,3 +246,12 @@ setTimeout(()=> {
 
 // small helper
 function escapeHtml(s){ return String(s||'').replace(/[&<>"']/g, c=> ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+console.log("Connecting to Firebase...", FIREBASE_CONFIG.databaseURL);
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js";
+import { getDatabase, ref, onValue, set } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js";
+
+const app = initializeApp(FIREBASE_CONFIG);
+const db = getDatabase(app);
+
+console.log("Firebase initialized OK", app.name);
