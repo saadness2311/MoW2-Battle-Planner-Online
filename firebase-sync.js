@@ -8,6 +8,30 @@
 // - Панель комнат: сворачивание/разворачивание работает
 // - Никаких записей в БД без явно выбранной комнаты
 
+// --- GLOBAL PATCH: Prevent Leaflet from crashing on unknown events like 'touchleave' ---
+(function() {
+  const originalOn = L.Evented.prototype.on;
+  L.Evented.prototype.on = function(types, fn, ctx) {
+    // Если это одиночное событие вида 'touchleave'
+    if (typeof types === 'string' && types.toLowerCase().includes('touchleave')) {
+      console.warn('[Leaflet Patch] Blocked invalid event:', types);
+      return this; // Просто игнорируем
+    }
+
+    // Если перечисленные события типа 'click touchleave mouseover'
+    if (typeof types === 'string') {
+      const filtered = types.split(/\s+/).filter(t => !t.toLowerCase().includes('touchleave'));
+      if (filtered.length === 0) {
+        console.warn('[Leaflet Patch] All events blocked because only invalid ones were provided:', types);
+        return this;
+      }
+      types = filtered.join(' ');
+    }
+
+    return originalOn.call(this, types, fn, ctx);
+  };
+})();
+
 (function(){
   'use strict';
 
