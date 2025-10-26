@@ -357,6 +357,42 @@ function subscribeToRoom(roomId) {
   _roomSubscription = channel;
 }
 
+/* Join room: load state, subscribe, update UI */
+async function joinRoom(roomId, nick) {
+  if (!supabaseClient) {
+    alert('Supabase не инициализирован');
+    return;
+  }
+  try {
+    console.log('[Supabase] Joining room', roomId, 'as', nick);
+    currentRoomId = roomId;
+    currentNick = nick;
+    
+    // Загружаем состояние комнаты
+    const { state } = await loadRoomState(roomId);
+    if (state) {
+      await applyRoomState(state);
+    }
+    
+    // Подписываемся на обновления
+    subscribeToRoom(roomId);
+    
+    // Обновляем UI
+    updateRoomUI();
+    
+    // Инициализируем локальное сохранение
+    try { await saveRoomState(); } catch (e) { console.warn('Initial save after join failed', e); }
+    
+    alert(`✅ Присоединились к комнате "${roomId}" как ${nick}`);
+  } catch (error) {
+    console.error('[Supabase] joinRoom error', error);
+    alert('Ошибка присоединения к комнате: ' + (error.message || 'Неизвестная ошибка'));
+    currentRoomId = null;
+    currentNick = null;
+    updateRoomUI();
+  }
+}
+
 /* Leave room: save then leave */
 async function leaveRoom(){
   try{ if(currentRoomId) await saveRoomState(); } catch(e){ console.warn('leaveRoom save failed', e); }
