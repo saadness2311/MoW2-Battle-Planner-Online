@@ -1,32 +1,55 @@
 // script_fixed.js
 // Модифицировано: минимальные правки синхронизации (флаги взаимодействия, очередь апдейтов)
 
+// Импорт uuid для генерации ID (простая реализация, так как нет внешних библиотек)
+function uuidv4() {
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+    var r = Math.random() * 16 | 0, v = c == 'x' ? r : (r & 0x3 | 0x8);
+    return v.toString(16);
+  });
+}
+
+// Throttle function для ограничения частоты вызовов (для drag и save)
+function throttle(func, limit) {
+  let lastFunc;
+  let lastRan;
+  return function() {
+    const context = this;
+    const args = arguments;
+    if (!lastRan) {
+      func.apply(context, args);
+      lastRan = Date.now();
+    } else {
+      clearTimeout(lastFunc);
+      lastFunc = setTimeout(function() {
+        if ((Date.now() - lastRan) >= limit) {
+          func.apply(context, args);
+          lastRan = Date.now();
+        }
+      }, limit - (Date.now() - lastRan));
+    }
+  }
+}
+
 // Helper: clear all markers, simple symbols, drawings and image overlay
 function clearMapAll(){
   try{
     // remove drawn shapes
-    if(typeof drawnItems !== 'undefined' && drawnItems && drawnItems.clearLayers) drawnItems.clearLayers(); try{ autoSave(); }catch(e){};
+    if(typeof drawnItems !== 'undefined' && drawnItems && drawnItems.clearLayers) drawnItems.clearLayers();
   } catch(e){ console.warn('clearMapAll drawnItems error', e); }
   try{
     if(typeof markerList !== 'undefined' && Array.isArray(markerList)){
       markerList.forEach(m=>{ try{ if(m && m.marker) map.removeLayer(m.marker); }catch(e){} });
-      markerList = []; try{ autoSave(); }catch(e){};
+      markerList = [];
     }
   } catch(e){ console.warn('clearMapAll markerList error', e); }
   try{
     if(typeof simpleMarkers !== 'undefined' && Array.isArray(simpleMarkers)){
-      simpleMarkers.forEach(m=>{ try{ map.removeLayer(m); }catch(e){} });
+      simpleMarkers.forEach(m=>{ try{ if(m.marker) map.removeLayer(m.marker); }catch(e){} });
       simpleMarkers = [];
     }
   } catch(e){ console.warn('clearMapAll simpleMarkers error', e); }
-  try{
-    if(typeof imageOverlay !== 'undefined' && imageOverlay){
-  try{ map.removeLayer(imageOverlay); }catch(e){};
-  imageOverlay = null;
-  imageBounds = null;
-  // ⚠️ НЕ СБРАСЫВАЕМ currentMapFile!
-}
-  } catch(e){ console.warn('clearMapAll imageOverlay error', e); }
+  // Убрано удаление imageOverlay, чтобы карта не пропадала
 }
 
 
@@ -39,13 +62,19 @@ const INTERACTION_RELEASE_DELAY = 300; // ms
 let _queuedRemoteState = null;
 
 /* helper: attach interaction handlers to marker-like objects */
-function attachInteractionHandlersToMarker(marker) {
+
+function attachInteractionHandlersToMarker(marker, markerId, echelon) {
   if (!marker || !marker.on) return;
   marker.on('dragstart', () => {
     _isInteracting = true;
     if (_interactionReleaseTimer) { clearTimeout(_interactionReleaseTimer); _interactionReleaseTimer = null; }
     try{ console.log('[sync] marker dragstart'); }catch(e){}
   });
+  marker.on('drag', throttle(() => {
+    // Отправляем гранулярное обновление позиции во время drag для плавности
+    const latlng = marker.getLatLng();
+    sendBroadcast({ event: 'marker-move', payload: { echelon, id: markerId, latlng } });
+  }, 100)); // throttle 100ms
   marker.on('dragend', () => {
     // небольшой буфер, затем снимаем флаг и применяем очередь
     if (_interactionReleaseTimer) clearTimeout(_interactionReleaseTimer);
@@ -62,8 +91,6 @@ function attachInteractionHandlersToMarker(marker) {
     }, INTERACTION_RELEASE_DELAY);
     try{ autoSave(); }catch(e){}
   });
-
-  // If marker starts other interactions (popup open/close), you can extend here.
 }
 
 /* ========== Supabase multiplayer integration START (room_states -> state_json) --- */
@@ -88,6 +115,7 @@ let currentNick = null;
 let _suppressRemoteLoad = false;
 let _lastLocalSave = 0;
 let _roomSubscription = null;
+let _saveThrottle = null;
 
 /* Create room (rooms table) */
 async function createRoom(name){
@@ -113,7 +141,6 @@ async function loadRoomState(roomId){
   console.log('[Supabase] loadRoomState for', roomId);
   const { data, error } = await supabaseClient.from('room_states').select('state_json, updated_at').eq('room_id', roomId).single();
   if(error){
-    // PGRST116: row not found - ignore
     if(error.code && error.code !== 'PGRST116'){
       console.error('loadRoomState select error', error);
     }
@@ -122,11 +149,9 @@ async function loadRoomState(roomId){
     console.log('[Supabase] loaded state_json (size):', JSON.stringify(data.state_json).length);
     return { state: data.state_json, updated_at: data.updated_at };
   } else {
-    // create initial empty state based on current map
     const initialPlan = {
       meta: { createdAt: new Date().toISOString(), mapFile: currentMapFile || null, echelonCount: ECHELON_COUNT },
-      echelons: {},
-      mapState: { center: (map && map.getCenter) ? map.getCenter() : null, zoom: (map && map.getZoom) ? map.getZoom() : null }
+      echelons: {}
     };
     for(let e=1;e<=ECHELON_COUNT;e++){
       initialPlan.echelons[e] = { markers: [], simple: [], drawings: [] };
@@ -142,9 +167,7 @@ async function loadRoomState(roomId){
 /* Apply room state to local map */
 async function applyRoomState(state, opts){
   if(!state) return;
-  // opts may contain forceApply to bypass interaction guard
   const forceApply = opts && opts.forceApply;
-  // Если локально идёт взаимодействие и это не форс — ставим в очередь и выходим
   if (_isInteracting && !forceApply) {
     try{ console.log('[sync] applyRoomState called during interaction — queueing remote state'); }catch(e){}
     _queuedRemoteState = state;
@@ -156,44 +179,92 @@ async function applyRoomState(state, opts){
     console.log('[Supabase] Applying room state, meta:', state.meta || {});
     const mapFile = state.meta && state.meta.mapFile ? state.meta.mapFile : (state.mapFile || null);
 
-    // 1) СНАЧАЛА очистим объекты (но карта уже не будет обнуляться, т.к. ты убрал currentMapFile = null)
-    try{ clearMapAll(); } catch(e){ console.warn('applyRoomState clearMapAll error', e); }
-
-    // 2) ПОТОМ загрузим карту снова (только если текущая карта не загружена)
-    if(mapFile){
+    // 1) Если карта отличается — загружаем новую и очищаем (только в этом случае clear)
+    if(mapFile && (!currentMapFile || currentMapFile !== mapFile)){
       try{
-        // если карта отличается от той что у нас — загружаем
-        if(!currentMapFile || currentMapFile !== mapFile){
-          await loadMapByFile(mapFile);
-        } else {
-          // currentMapFile совпадает — не перезагружаем
-        }
+        clearMapAll(); // Очищаем только при смене карты
+        await loadMapByFile(mapFile);
       } catch(e){ console.warn('applyRoomState: loadMapByFile failed', e); }
-    }
+    } // Иначе карта остается
 
-    // 3) Восстановим эшелоны
+    // 2) Merge эшелоны вместо replace
     for(let e=1;e<= (state.meta && state.meta.echelonCount ? state.meta.echelonCount : ECHELON_COUNT); e++){
-      const s = (state.echelons && state.echelons[e]) ? state.echelons[e] : { markers:[], simple:[], drawings:[] };
-      echelonStates[e] = {
-        markers: (s.markers||[]).map(m => ({ ...m, marker: null })),
-        simple: s.simple || [],
-        drawings: s.drawings || []
-      };
+      const remoteEch = (state.echelons && state.echelons[e]) ? state.echelons[e] : { markers:[], simple:[], drawings:[] };
+      if(!echelonStates[e]) echelonStates[e] = { markers: [], simple: [], drawings: [] };
+
+      // Merge markers by id
+      const localMarkersMap = new Map(echelonStates[e].markers.map(m => [m.id, m]));
+      remoteEch.markers.forEach(rm => {
+        if(localMarkersMap.has(rm.id)){
+          const lm = localMarkersMap.get(rm.id);
+          lm.latlng = rm.latlng; // update position
+          if(lm.marker) lm.marker.setLatLng(rm.latlng); // update on map if exists
+          lm.nick = rm.nick; // update other props
+          lm.nation = rm.nation;
+          lm.regimentFile = rm.regimentFile;
+        } else {
+          const newMarker = { ...rm, marker: null };
+          echelonStates[e].markers.push(newMarker);
+        }
+      });
+      // Remove deleted markers
+      echelonStates[e].markers.forEach(lm => {
+        if (!remoteEch.markers.some(rm => rm.id === lm.id)) {
+          if (lm.marker) map.removeLayer(lm.marker);
+        }
+      });
+      echelonStates[e].markers = echelonStates[e].markers.filter(lm => remoteEch.markers.some(rm => rm.id === lm.id));
+
+      // Merge simple (стандартизированный формат {id, type, marker, latlng})
+      const localSimpleMap = new Map(echelonStates[e].simple.map(s => [s.id, s]));
+      remoteEch.simple.forEach(rs => {
+        if(localSimpleMap.has(rs.id)){
+          const ls = localSimpleMap.get(rs.id);
+          ls.latlng = rs.latlng;
+          ls.type = rs.type;
+          if(ls.marker) ls.marker.setLatLng(rs.latlng);
+        } else {
+          echelonStates[e].simple.push({ ...rs, marker: null });
+        }
+      });
+      // Remove deleted simple
+      echelonStates[e].simple.forEach(ls => {
+        if (!remoteEch.simple.some(rs => rs.id === ls.id)) {
+          if (ls.marker) map.removeLayer(ls.marker);
+        }
+      });
+      echelonStates[e].simple = echelonStates[e].simple.filter(ls => remoteEch.simple.some(rs => rs.id === ls.id));
+
+      // Merge drawings
+      const localDrawingsMap = new Map(echelonStates[e].drawings.map(d => [d.id, d]));
+      remoteEch.drawings.forEach(rd => {
+        if(localDrawingsMap.has(rd.id)){
+          const ld = localDrawingsMap.get(rd.id);
+          if(ld.layer) {
+            try { drawnItems.removeLayer(ld.layer); } catch(e){}
+          }
+          ld.geojson = rd.geojson;
+          ld.layer = L.GeoJSON.geometryToLayer(rd.geojson);
+          drawnItems.addLayer(ld.layer);
+        } else {
+          const newLayer = L.GeoJSON.geometryToLayer(rd.geojson);
+          drawnItems.addLayer(newLayer);
+          echelonStates[e].drawings.push({ id: rd.id, geojson: rd.geojson, layer: newLayer });
+        }
+      });
+      // Remove deleted drawings
+      echelonStates[e].drawings.forEach(ld => {
+        if(!remoteEch.drawings.some(rd => rd.id === ld.id)){
+          if(ld.layer) {
+            try { drawnItems.removeLayer(ld.layer); } catch(e){}
+          }
+        }
+      });
+      echelonStates[e].drawings = echelonStates[e].drawings.filter(ld => remoteEch.drawings.some(rd => rd.id === ld.id));
     }
     if(typeof currentEchelon === 'undefined') currentEchelon = 1;
     if(!echelonStates[currentEchelon]) currentEchelon = 1;
-    loadEchelonState(currentEchelon);
-
-    // 4) Восстанавливаем положение карты — только если не было локального ручного изменения совсем
-    if(state.mapState && state.mapState.center && typeof state.mapState.zoom !== 'undefined'){
-      try{
-        if(!_isInteracting){
-          map.setView(state.mapState.center, state.mapState.zoom);
-        } else {
-          // если вдруг пришёл mapState во время взаимодействия (force недавно) — можно поставить в очередь, но мы уже вышли
-        }
-      } catch(e){ console.warn('applyRoomState setView error', e); }
-    }
+    loadEchelonState(currentEchelon); // Reload current to apply merges
   } finally {
     setTimeout(()=>{ _suppressRemoteLoad = false; }, 200);
   }
@@ -203,8 +274,7 @@ async function applyRoomState(state, opts){
 function buildCurrentPlan(){
   const plan = {
     meta: { createdAt: new Date().toISOString(), mapFile: currentMapFile || plan?.meta?.mapFile || null, echelonCount: ECHELON_COUNT },
-    echelons: {},
-    mapState: { center: (map && map.getCenter) ? map.getCenter() : null, zoom: (map && map.getZoom) ? map.getZoom() : null }
+    echelons: {}
   };
   for(let e=1;e<=ECHELON_COUNT;e++){
     const st = echelonStates[e] || { markers:[], simple:[], drawings:[] };
@@ -213,8 +283,8 @@ function buildCurrentPlan(){
         id: m.id, team: m.team, playerIndex: m.playerIndex, nick: m.nick, nation: m.nation, regimentFile: m.regimentFile,
         latlng: (m.latlng) ? m.latlng : (m.marker && m.marker.getLatLng ? m.marker.getLatLng() : null)
       })),
-      simple: st.simple || [],
-      drawings: st.drawings || []
+      simple: st.simple.map(s => ({ id: s.id, type: s.type, latlng: s.latlng || (s.marker && s.marker.getLatLng()) })),
+      drawings: st.drawings.map(d => ({ id: d.id, geojson: d.layer.toGeoJSON().geometry })) // Сохраняем как GeoJSON geometry
     };
   }
   return plan;
@@ -223,72 +293,68 @@ function buildCurrentPlan(){
 /* Save room state reliably into room_states.state_json */
 async function saveRoomState(){
   if(!supabaseClient || !currentRoomId) { console.warn('saveRoomState: supabaseClient or currentRoomId missing'); return; }
-  try{
-    // ensure local state updated
-    try{ saveCurrentEchelonState(); } catch(e){ console.warn('saveRoomState: saveCurrentEchelonState error', e); }
-    const plan = buildCurrentPlan();
-    const rid = Number(currentRoomId);
-    console.log('[Supabase] saveRoomState upsert for room', rid, 'plan size', JSON.stringify(plan).length);
-    // upsert into room_states
-    const payload = { room_id: rid, state_json: plan, updated_at: new Date().toISOString(), last_editor: currentNick || null };
-    const { data, error } = await supabaseClient.from('room_states').upsert(payload, { onConflict: 'room_id' }).select().limit(1);
-    if(error){
-      console.error('[Supabase] saveRoomState upsert error', error);
-      try{ alert('Ошибка сохранения комнаты: ' + (error.message || JSON.stringify(error))); }catch(e){}
-    } else {
-      console.log('[Supabase] saveRoomState success', data && data[0] ? 'ok' : data);
+  if(_saveThrottle) clearTimeout(_saveThrottle);
+  _saveThrottle = setTimeout(async () => {
+    try{
+      try{ saveCurrentEchelonState(); } catch(e){ console.warn('saveRoomState: saveCurrentEchelonState error', e); }
+      const plan = buildCurrentPlan();
+      const rid = Number(currentRoomId);
+      console.log('[Supabase] saveRoomState upsert for room', rid, 'plan size', JSON.stringify(plan).length);
+      const payload = { room_id: rid, state_json: plan, updated_at: new Date().toISOString(), last_editor: currentNick || null };
+      const { data, error } = await supabaseClient.from('room_states').upsert(payload, { onConflict: 'room_id' }).select().limit(1);
+      if(error){
+        console.error('[Supabase] saveRoomState upsert error', error);
+        try{ alert('Ошибка сохранения комнаты: ' + (error.message || JSON.stringify(error))); }catch(e){}
+      } else {
+        console.log('[Supabase] saveRoomState success', data && data[0] ? 'ok' : data);
+      }
+      _lastLocalSave = Date.now();
+    } catch(e){
+      console.error('saveRoomState exception', e);
+      try{ alert('Ошибка сохранения комнаты: ' + e.message); }catch(e){}
     }
-    _lastLocalSave = Date.now();
-  } catch(e){
-    console.error('saveRoomState exception', e);
-    try{ alert('Ошибка сохранения комнаты: ' + e.message); }catch(e){}
-  }
+    _saveThrottle = null;
+  }, 500); // throttle 500ms для снижения лагов
+}
+
+// <--- ВСТАВЬ СЮДА, ПОСЛЕ saveRoomState()
+async function sendBroadcast(message) {
+  if(!_roomSubscription) return;
+  await _roomSubscription.send({ type: 'broadcast', ...message });
 }
 
 /* Realtime subscribe to room_states (UPDATE) */
-function unsubscribeRoom(){
-  if(_roomSubscription && supabaseClient){
-    try{ supabaseClient.removeChannel(_roomSubscription); }catch(e){}
+function subscribeToRoom(roomId) {
+  if(_roomSubscription) {
+    supabaseClient.removeChannel(_roomSubscription);
     _roomSubscription = null;
   }
-}
-function subscribeToRoom(roomId){
-  if(!supabaseClient) return;
-  unsubscribeRoom();
-  try{
-    _roomSubscription = supabaseClient.channel('room_states-'+roomId)
-      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'room_states', filter: `room_id=eq.${roomId}` }, payload=>{
-        // ignore own recent saves
-        if(Date.now() - _lastLocalSave < 500) return;
-        if(_suppressRemoteLoad) return;
-        if(payload && payload.new && payload.new.state_json){
-          try{
-            console.log('[Supabase] realtime update received for room', roomId);
-            applyRoomState(payload.new.state_json);
-            document.getElementById('roomStatus').textContent = 'Синхронизировано: ' + (payload.new.last_editor || 'unknown');
-          } catch(e){ console.error('Error applying room_state', e); }
-        }
-      })
-      .subscribe();
-    console.log('[Supabase] subscribed to room_states for', roomId);
-  } catch(e){ console.error('subscribeToRoom error', e); }
-}
+  const channel = supabaseClient.channel(`room:${roomId}`);
+  channel.on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'room_states' }, async (payload) => {
+    if(_suppressRemoteLoad) return;
+    if(payload.new && payload.new.updated_at && new Date(payload.new.updated_at).getTime() <= _lastLocalSave) return;
+    console.log('[realtime] room_state update received');
+    const { state } = await loadRoomState(roomId);
+    applyRoomState(state);
+  });
 
-/* Join room: save previous, load new, subscribe */
-async function joinRoom(roomId, nick){
-  if(!supabaseClient) throw new Error('Supabase not initialized');
-  if(currentRoomId && currentRoomId !== roomId){
-    try{ await saveRoomState(); } catch(e){ console.warn('save previous room failed', e); }
-  }
-  currentRoomId = roomId;
-  currentNick = nick;
-  updateRoomUI();
-  console.log('[Supabase] joinRoom', roomId, 'nick', nick);
-  const rs = await loadRoomState(roomId);
-  if(rs && rs.state){
-    try{ applyRoomState(rs.state); } catch(e){ console.error('applyRoomState after join error', e); }
-  }
-  subscribeToRoom(roomId);
+  // Granular broadcasts
+  channel.on('broadcast', { event: 'marker-move' }, ({payload}) => {
+    if(_suppressRemoteLoad) return;
+    const { echelon, id, latlng } = payload;
+    if(echelonStates[echelon]) {
+      const marker = echelonStates[echelon].markers.find(m => m.id === id);
+      if(marker) {
+        marker.latlng = latlng;
+        if(marker.marker && !_isInteracting) marker.marker.setLatLng(latlng); // apply if not interacting
+      }
+    }
+  });
+  // Добавьте аналогично для других событий (simple-move, drawing-update), если нужно
+  channel.subscribe((status) => {
+    if(status === 'SUBSCRIBED') console.log('[realtime] subscribed to room', roomId);
+  });
+  _roomSubscription = channel;
 }
 
 /* Leave room: save then leave */
@@ -309,6 +375,14 @@ async function deleteRoom(roomId){
   unsubscribeRoom();
   if(currentRoomId == roomId) await leaveRoom();
   try{ document.getElementById('btnRefreshRooms').click(); }catch(e){}
+}
+
+/* Unsubscribe from room */
+function unsubscribeRoom() {
+  if (_roomSubscription) {
+    supabaseClient.removeChannel(_roomSubscription);
+    _roomSubscription = null;
+  }
 }
 
 /* --- Supabase multiplayer integration END --- */
@@ -424,22 +498,22 @@ const MAP_NAMES = {
   7: "Dead River",
   8: "Estate",
   9: "Farm Land",
- 10: "Hunting Grounds",
- 11: "Kursk Fields",
- 12: "Nameless Height",
- 13: "Polesie",
- 14: "Port",
- 15: "Saint Lo",
- 16: "Suburb",
- 17: "Valley of Death",
- 18: "Village",
- 19: "Volokalamsk Highway",
- 20: "Witches Vale",
- 21: "Winter March",
- 22: "Chepel",
- 23: "Crossroads",
- 24: "Sandy Path",
- 25: "Marl"
+  10: "Hunting Grounds",
+  11: "Kursk Fields",
+  12: "Nameless Height",
+  13: "Polesie",
+  14: "Port",
+  15: "Saint Lo",
+  16: "Suburb",
+  17: "Valley of Death",
+  18: "Village",
+  19: "Volokalamsk Highway",
+  20: "Witches Vale",
+  21: "Winter March",
+  22: "Chepel",
+  23: "Crossroads",
+  24: "Sandy Path",
+  25: "Marl"
 };
 
 // Регистры (отображаемые названия полков) для каждой нации (reg1..reg17)
@@ -557,10 +631,8 @@ let echelonStates = {
 };
 
 // Контейнеры для маркеров/символов
-let markerList = []; // {id, team, playerIndex, nick, nation, regimentFile, marker}
-let simpleMarkers = []; // symbols from SimpleSymbols or others
-// keep track of player markers separately for easier removal
-// (we're using markerList as canonical list)
+let markerList = []; // {id, team, playerIndex, nick, nation, regimentFile, marker, latlng}
+let simpleMarkers = []; // {id, type, marker, latlng}
 
 // ------------ Draw control: ensure color/weight are applied ------------
 function getDrawColor(){ return $id('drawColor') ? $id('drawColor').value : '#ff0000'; }
@@ -570,7 +642,6 @@ function getDrawWeight(){ return $id('drawWeight') ? Number($id('drawWeight').va
 const drawControl = new L.Control.Draw({
   position: 'topleft',
   draw: {
-    marker: false,
     polyline: true,
     polygon: true,
     rectangle: false,
@@ -580,6 +651,33 @@ const drawControl = new L.Control.Draw({
   edit: { featureGroup: drawnItems, remove: true }
 });
 map.addControl(drawControl);
+
+// === СИНХРОНИЗАЦИЯ РИСУНКОВ (drawings) ===
+drawnItems.on('layeradd', (e) => {
+  const layer = e.layer;
+  if (!layer._syncId) {
+    layer._syncId = uuidv4();
+    if (!echelonStates[currentEchelon].drawings) {
+      echelonStates[currentEchelon].drawings = [];
+    }
+    echelonStates[currentEchelon].drawings.push({
+      id: layer._syncId,
+      layer: layer,
+      geojson: layer.toGeoJSON().geometry
+    });
+    autoSave();
+  }
+});
+
+drawnItems.on('layerremove', (e) => {
+  const layer = e.layer;
+  if (layer._syncId && echelonStates[currentEchelon]) {
+    echelonStates[currentEchelon].drawings = echelonStates[currentEchelon].drawings.filter(
+      d => d.id !== layer._syncId
+    );
+    autoSave();
+  }
+});
 
 // ------------ Панель управления эшелонами ------------
 const echelonControl = L.control({ position: 'topright' });
@@ -773,7 +871,7 @@ const SimpleSymbols = L.Control.extend({
           L.DomEvent.preventDefault(e);
           const mk = addCustomIcon(`assets/symbols/${name}.png`, map.getCenter());
           if (mk) mk._symbName = name;
-          simpleMarkers.push(mk);
+          simpleMarkers.push({marker: mk}); // стандартизировано
           // attach handlers if possible
           try{ attachInteractionHandlersToMarker(mk); }catch(e){}
         });
@@ -801,6 +899,8 @@ function addSimpleSymbol(type, latlng) {
     case 'cross': char='☧'; break;
   }
 
+  const markerId = uuidv4(); // <--- НОВЫЙ ID
+
   const marker = L.marker(latlng, {
     icon: L.divIcon({
       html: `<div style="color:${color};font-size:${size}px;">${char}</div>`,
@@ -811,18 +911,35 @@ function addSimpleSymbol(type, latlng) {
     draggable: true
   }).addTo(map);
 
-  // НЕ добавляем tooltip для простых символов
-  marker._simpleType = type; // чтобы при сохранении/загрузке восстановить тип
+  marker._simpleType = type;
 
   marker.on('click', () => {
-    if(confirm('Удалить этот символ?')){ map.removeLayer(marker); const idx = simpleMarkers.indexOf(marker); if(idx!==-1) simpleMarkers.splice(idx,1); try{ autoSave(); }catch(e){} }
+    if(confirm('Удалить этот символ?')){ 
+      map.removeLayer(marker); 
+      const idx = simpleMarkers.findIndex(s => s.marker === marker); 
+      if(idx!==-1) simpleMarkers.splice(idx,1); 
+      try{ autoSave(); }catch(e){} 
+    }
   });
 
-  try{ attachInteractionHandlersToMarker(marker); }catch(e){}
-  try{ autoSave(); }catch(e){}; try{ autoSave(); }catch(e){}; return marker;
+  attachInteractionHandlersToMarker(marker, markerId, currentEchelon); // <--- ПОДКЛЮЧАЕМ
+
+  simpleMarkers.push({
+    id: markerId,     // <--- НОВЫЙ ID
+    type: type,       // <--- ТИП
+    marker: marker,
+    latlng: latlng
+  });
+
+  try{ autoSave(); }catch(e){}; 
+  return marker;
 }
 
 function addCustomIcon(url, latlng) {
+  const markerId = uuidv4(); // <--- НОВЫЙ ID
+  const file = String(url).split('/').pop() || '';
+  const type = file.replace(/\.[^/.]+$/, ''); // symb1, symb2 и т.д.
+
   const marker = L.marker(latlng, {
     icon: L.icon({
       iconUrl: url,
@@ -832,30 +949,39 @@ function addCustomIcon(url, latlng) {
     draggable: true
   }).addTo(map);
 
-  try {
-    const file = String(url).split('/').pop() || '';
-    const key = file.replace(/\.[^/.]+$/, '');
-    marker._symbName = key;
+  marker._symbName = type;
 
-    // --- Только если для символа есть label ---
-    if(ICON_LABELS[key]){
-      const label = ICON_SHORT[key] || ICON_LABELS[key];
-      marker.bindTooltip(label, {
-        permanent: false,
-        direction: "top",
-        offset: [0, -26],
-        opacity: 0.95,
-        className: 'symb-tooltip'
-      });
-    }
-  } catch (e) { console.warn('tooltip bind error', e); }
+  if (ICON_LABELS[type]) {
+    const label = ICON_SHORT[type] || ICON_LABELS[type];
+    marker.bindTooltip(label, {
+      permanent: false,
+      direction: "top",
+      offset: [0, -26],
+      opacity: 0.95,
+      className: 'symb-tooltip'
+    });
+  }
 
   marker.on('click', () => {
-    if (confirm('Удалить этот символ?')) { map.removeLayer(marker); const idx = simpleMarkers.indexOf(marker); if (idx !== -1) simpleMarkers.splice(idx, 1); try{ autoSave(); }catch(e){} }
+    if (confirm('Удалить этот символ?')) { 
+      map.removeLayer(marker); 
+      const idx = simpleMarkers.findIndex(s => s.marker === marker); 
+      if (idx !== -1) simpleMarkers.splice(idx, 1); 
+      try{ autoSave(); }catch(e){} 
+    }
   });
 
-  try{ attachInteractionHandlersToMarker(marker); }catch(e){}
-  try{ autoSave(); }catch(e){}; return marker;
+  attachInteractionHandlersToMarker(marker, markerId, currentEchelon); // <--- ПОДКЛЮЧАЕМ
+
+  simpleMarkers.push({
+    id: markerId,     // <--- НОВЫЙ ID
+    type: type,       // <--- ТИП
+    marker: marker,
+    latlng: latlng
+  });
+
+  try{ autoSave(); }catch(e){}; 
+  return marker;
 }
 
 //------------ Заполнение списка карт автоматически ------------
@@ -1018,18 +1144,27 @@ function placeMarker(nick, nation, regimentFile, team, playerIndex){
 
   // позиция: центр карты (или центр изображения)
   const pos = map.getCenter();
+  const markerId = uuidv4(); // <--- НОВЫЙ ID
+
   const icon = createRegDivIcon(nick, nation, regimentFile, team);
   const marker = L.marker(pos, { icon, draggable: true }).addTo(map);
 
-  // не добавляем tooltip (как ты попросил удалить)
-  marker.on('dragend', ()=> { try{ autoSave(); }catch(e){console.error(e);} });
+  marker.on('dragend', () => { try{ autoSave(); }catch(e){} });
 
-  try{ attachInteractionHandlersToMarker(marker); }catch(e){}
+  attachInteractionHandlersToMarker(marker, markerId, currentEchelon); // <--- ПОДКЛЮЧАЕМ
 
-  const entry = { id, team, playerIndex, nick, nation, regimentFile, marker };
+  const entry = { 
+    id: markerId,           // <--- НОВЫЙ ID
+    team, 
+    playerIndex, 
+    nick, 
+    nation, 
+    regimentFile, 
+    marker,
+    latlng: pos
+  };
   markerList.push(entry);
   try{ autoSave(); }catch(e){}
-
 }
 
 //------------ Кнопки готовых символов ------------
@@ -1059,10 +1194,9 @@ function saveCurrentEchelonState() {
       latlng: m.marker.getLatLng()
     })),
     simple: simpleMarkers.map(m => {
-      const latlng = m.getLatLng ? m.getLatLng() : {lat:0,lng:0};
-      const type = m._symbName || m._simpleType || null;
-      const html = m.getElement ? m.getElement().innerHTML : '';
-      return { latlng, type, html };
+      const latlng = m.marker.getLatLng ? m.marker.getLatLng() : {lat:0,lng:0};
+      const type = m.marker._symbName || m.marker._simpleType || null;
+      return { id: m.id, type, latlng };
     }),
     drawings: (() => {
       const drawings = [];
@@ -1095,7 +1229,7 @@ function loadEchelonState(echelon) {
   drawnItems.clearLayers();
   markerList.forEach(m => { try { map.removeLayer(m.marker); } catch(e){} });
   markerList = [];
-  simpleMarkers.forEach(m => { try { map.removeLayer(m); } catch(e){} });
+  simpleMarkers.forEach(m => { try { map.removeLayer(m.marker); } catch(e){} });
   simpleMarkers = [];
 
   // восстановить
@@ -1103,7 +1237,7 @@ function loadEchelonState(echelon) {
     const pos = m.latlng || {lat:0,lng:0};
     const marker = L.marker([pos.lat,pos.lng], { icon:createRegDivIcon(m.nick,m.nation,m.regimentFile,m.team), draggable:true }).addTo(map);
     try{ attachInteractionHandlersToMarker(marker); }catch(e){}
-    markerList.push({...m, marker});
+    markerList.push({...m, marker, latlng: pos});
   });
 
   (state.simple||[]).forEach(s=>{
@@ -1119,7 +1253,7 @@ function loadEchelonState(echelon) {
       }).addTo(map);
       try{ attachInteractionHandlersToMarker(marker); }catch(e){}
     }
-    simpleMarkers.push(marker);
+    simpleMarkers.push({id: s.id, type: s.type, marker, latlng});
   });
 
   (state.drawings||[]).forEach(d=>{
@@ -1140,7 +1274,7 @@ $id('btnClearAll').addEventListener('click', ()=>{
   markerList.forEach(m => { try { map.removeLayer(m.marker); } catch(e){} });
   markerList = [];
   // удалить простые символы
-  simpleMarkers.forEach(m => { try { map.removeLayer(m); } catch(e){} });
+  simpleMarkers.forEach(m => { try { map.removeLayer(m.marker); } catch(e){} });
   simpleMarkers = [];
   // удалить рисунки
   drawnItems.clearLayers();
@@ -1208,7 +1342,7 @@ function loadPlanData(plan) {
             ...m,
             marker: null // создадим позже при активации эшелона
           })),
-          simple: state.simple || [],
+          simple: state.simple.map(s => ({ ...s, marker: null })),
           drawings: state.drawings || []
         };
       }
@@ -1258,7 +1392,7 @@ document.getElementById("planFileInput").addEventListener("change", function(e) 
     try {
       const data = JSON.parse(ev.target.result);
       loadPlanData(data);  // <-- функция загрузки плана
-    } catch(err) {
+    } catch(err){
       console.error(err);
       alert("Ошибка при загрузке файла плана!");
     } finally {
@@ -1455,7 +1589,7 @@ document.addEventListener('DOMContentLoaded', ()=>{
     }catch(e){ alert('Ошибка создания комнаты: '+e.message); console.error(e); }
   });
 
-  btnLeave.addEventListener('click', async ()=>{ await await leaveRoom(); btnLeave.style.display = 'none'; });
+  btnLeave.addEventListener('click', async ()=>{ await leaveRoom(); btnLeave.style.display = 'none'; });
 });
 
 //заглушка комнат ui
