@@ -450,6 +450,82 @@ let echelonStates = {
   3: { markers: [], simple: [], drawings: [] }
 };
 
+// ------------ Панель управления эшелонами ------------
+const echelonControl = L.control({ position: 'topright' });
+
+echelonControl.onAdd = function(map) {
+  const container = L.DomUtil.create('div', 'leaflet-bar echelon-control');
+  container.style.background = 'rgba(25,25,25,0.75)';
+  container.style.color = 'white';
+  container.style.padding = '6px 10px';
+  container.style.border = '1px solid rgba(255,255,255,0.2)';
+  container.style.borderRadius = '8px';
+  container.style.display = 'flex';
+  container.style.alignItems = 'center';
+  container.style.gap = '6px';
+  container.style.userSelect = 'none';
+  container.style.fontFamily = 'sans-serif';
+  container.style.fontSize = '14px';
+
+  const leftBtn = L.DomUtil.create('button','',container);
+  leftBtn.innerHTML = '⟵';
+  leftBtn.style.background = 'none';
+  leftBtn.style.color = 'white';
+  leftBtn.style.border = 'none';
+  leftBtn.style.cursor = 'pointer';
+  leftBtn.title = 'Предыдущий эшелон';
+
+  const label = L.DomUtil.create('span','',container);
+  label.textContent = `Эшелон ${currentEchelon}/${ECHELON_COUNT}`;
+  label.style.minWidth = '80px';
+  label.style.textAlign = 'center';
+
+  const rightBtn = L.DomUtil.create('button','',container);
+  rightBtn.innerHTML = '⟶';
+  rightBtn.style.background = 'none';
+  rightBtn.style.color = 'white';
+  rightBtn.style.border = 'none';
+  rightBtn.style.cursor = 'pointer';
+  rightBtn.title = 'Следующий эшелон';
+
+  const copyBtn = L.DomUtil.create('button','',container);
+  copyBtn.innerHTML = '📋';
+  copyBtn.style.background = 'none';
+  copyBtn.style.color = 'white';
+  copyBtn.style.border = 'none';
+  copyBtn.style.cursor = 'pointer';
+  copyBtn.title = 'Копировать текущее состояние в следующий эшелон';
+
+  // обработчики
+  L.DomEvent.on(leftBtn, 'click', e => {
+    L.DomEvent.stopPropagation(e);
+    saveCurrentEchelonState();
+    currentEchelon = currentEchelon <= 1 ? ECHELON_COUNT : currentEchelon - 1;
+    loadEchelonState(currentEchelon);
+    label.textContent = `Эшелон ${currentEchelon}/${ECHELON_COUNT}`;
+  });
+
+  L.DomEvent.on(rightBtn, 'click', e => {
+    L.DomEvent.stopPropagation(e);
+    saveCurrentEchelonState();
+    currentEchelon = currentEchelon >= ECHELON_COUNT ? 1 : currentEchelon + 1;
+    loadEchelonState(currentEchelon);
+    label.textContent = `Эшелон ${currentEchelon}/${ECHELON_COUNT}`;
+  });
+
+  L.DomEvent.on(copyBtn, 'click', e => {
+    L.DomEvent.stopPropagation(e);
+    saveCurrentEchelonState();
+    const next = currentEchelon >= ECHELON_COUNT ? 1 : currentEchelon + 1;
+    echelonStates[next] = JSON.parse(JSON.stringify(echelonStates[currentEchelon]));
+    alert(`Скопировано в эшелон ${next}`);
+  });
+
+  return container;
+};
+
+map.addControl(echelonControl);
+
 // Контейнеры для маркеров/символов
 let markerList = []; // {id, team, playerIndex, nick, nation, regimentFile, marker}
 let simpleMarkers = []; // symbols from SimpleSymbols or others
