@@ -93,22 +93,35 @@
 <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
 
 
-<!-- Подключаем Supabase и bcrypt с атрибутом defer -->
-<script defer src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.3/dist/umd/supabase.js"></script>
-<script defer src="./bcrypt.min.js"></script>
+<!-- Подключаем Supabase и bcrypt напрямую и синхронно -->
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.3/dist/umd/supabase.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/bcryptjs@2.4.3/dist/bcrypt.min.js"></script>
 
-<!-- Загружаем твой код ТОЛЬКО после загрузки зависимостей -->
+<!-- Основной скрипт проекта -->
 <script>
-window.addEventListener('load', async () => {
-  if (typeof supabase === 'undefined' || typeof bcrypt === 'undefined') {
-    console.error('❌ Ошибка: библиотеки Supabase или bcrypt не загрузились');
-    return;
-  }
-  // Загружаем основной скрипт, когда зависимости гарантированно готовы
-  const s = document.createElement('script');
-  s.src = './script.js';
-  document.body.appendChild(s);
-});
+  // ждем, пока всё прогрузится в window
+  document.addEventListener('DOMContentLoaded', () => {
+    if (typeof supabase === 'undefined') {
+      console.error('❌ Supabase не загрузился (проверь сеть или CSP)');
+      return;
+    }
+    if (typeof bcrypt === 'undefined') {
+      console.error('❌ bcryptjs не загрузился (CDN или блокировка)');
+      return;
+    }
+
+    // теперь создаем клиент и подключаем твой код
+    window.supabaseClient = supabase.createClient(
+      'https://zqklzhipwiifrrbyentg.supabase.co',
+      'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inpxa2x6aGlwd2lpZnJyYnllbnRnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjA5NzQ0ODYsImV4cCI6MjA3NjU1MDQ4Nn0.siMc2xCvoBEjwNVwaOVvjlOtDODs9yDo0IDyGl9uWso'
+    );
+
+    const s = document.createElement('script');
+    s.src = './script.js';
+    document.body.appendChild(s);
+
+    console.log('✅ Supabase и bcrypt подключены, script.js загружен');
+  });
 </script>
 </body>
 </html>
