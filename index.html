@@ -12,7 +12,7 @@
   <link rel="stylesheet" href="style.css" />
   <link rel="icon" type="image/x-icon" href="/favicon.ico" />
 
-  <!-- Supabase и bcrypt (загружаются в <head>, чтобы быть доступны в script.js) -->
+  <!-- Supabase и bcrypt -->
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/bcryptjs@2.4.3/dist/bcrypt.min.js"></script>
 </head>
@@ -97,20 +97,7 @@
   <script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
 
-  <!-- Инициализация Supabase -->
-  <script>
-    const SUPABASE_URL = 'https://zqklzhipwiifrrbyentg.supabase.co';
-    const SUPABASE_ANON_KEY =
-      'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inpxa2x6aGlwd2lpZnJyYnllbnRnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjA5NzQ0ODYsImV4cCI6MjA3NjU1MDQ4Nn0.siMc2xCvoBEjwNVwaOVvjlOtDODs9yDo0IDyGl9uWso';
-
-    // Создаем глобальный клиент один раз
-    const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
-    window.supabaseClient = supabaseClient;
-
-    console.log('✅ Supabase и bcrypt подключены');
-  </script>
-
-  <!-- Основной скрипт -->
-  <script src="script.js"></script>
+  <!-- Загружаем основной скрипт -->
+  <script src="./script.js"></script>
 </body>
 </html>
