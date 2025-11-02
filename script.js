@@ -144,6 +144,91 @@ function showAuthScreen(){
   document.querySelectorAll('.app,#map').forEach(el=>el.style.pointerEvents='none');
 }
 
+// --- Комнаты: загрузка списка ---
+async function loadRoomsList() {
+  const list = $id('mow2_rooms_list');
+  if (!list) return;
+
+  list.innerHTML = '<div style="color:#999;padding:8px">Загрузка...</div>';
+  try {
+    const { data: rooms, error } = await supabaseClient
+      .from('rooms')
+      .select('id,name,owner_user_id')
+      .order('created_at', { ascending: false });
+
+    if (error) throw error;
+    if (!rooms || rooms.length === 0) {
+      list.innerHTML = '<div style="color:#888;padding:8px">Пока нет комнат</div>';
+      return;
+    }
+
+    // Получаем всех владельцев, чтобы вывести ник
+    const ownerIds = [...new Set(rooms.map(r => r.owner_user_id))];
+    const { data: owners } = await supabaseClient
+      .from('users_mow2')
+      .select('id,username')
+      .in('id', ownerIds);
+    const ownerMap = {};
+    (owners || []).forEach(o => ownerMap[o.id] = o.username);
+
+    list.innerHTML = '';
+    for (const room of rooms) {
+      const div = document.createElement('div');
+      div.style.display = 'flex';
+      div.style.justifyContent = 'space-between';
+      div.style.alignItems = 'center';
+      div.style.background = 'rgba(15,15,15,0.6)';
+      div.style.padding = '8px';
+      div.style.marginBottom = '6px';
+      div.style.borderRadius = '6px';
+
+      const left = document.createElement('div');
+      left.innerHTML = `<div style="font-size:15px">${escapeHtml(room.name)}</div>
+                        <div style="font-size:12px;color:#aaa">Создатель: ${escapeHtml(ownerMap[room.owner_user_id] || room.owner_user_id)}</div>`;
+      div.appendChild(left);
+
+      const right = document.createElement('div');
+      right.style.display = 'flex';
+      right.style.gap = '8px';
+
+      const joinBtn = document.createElement('button');
+      joinBtn.textContent = 'Войти';
+      joinBtn.onclick = async () => {
+        const { data: members } = await supabaseClient.from('room_members')
+          .select('user_id').eq('room_id', room.id);
+        const exists = (members || []).find(m => m.user_id === Auth.currentUser.id);
+        if (!exists) {
+          await supabaseClient.from('room_members').upsert([
+            { room_id: room.id, user_id: Auth.currentUser.id, is_owner: false }
+          ], { onConflict: ['room_id', 'user_id'] });
+        }
+        CURRENT_ROOM_ID = room.id;
+        showRoomPanelOnEnter();
+        $id('mow2_rooms_container').style.display = 'none';
+      };
+      right.appendChild(joinBtn);
+
+      if (room.owner_user_id === Auth.currentUser.id) {
+        const delBtn = document.createElement('button');
+        delBtn.textContent = 'Удалить';
+        delBtn.onclick = async () => {
+          if (!confirm('Удалить комнату?')) return;
+          await supabaseClient.from('rooms').delete().eq('id', room.id);
+          await supabaseClient.from('room_members').delete().eq('room_id', room.id);
+          loadRoomsList();
+        };
+        right.appendChild(delBtn);
+      }
+
+      div.appendChild(right);
+      list.appendChild(div);
+    }
+  } catch (err) {
+    console.error(err);
+    list.innerHTML = '<div style="color:#f88;padding:8px">Ошибка загрузки списка комнат</div>';
+  }
+}
+
 function showRoomsScreen(){
   ensureAuthAndRoomsContainers();
   $id('mow2_auth_container').style.display='none';
