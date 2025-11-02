@@ -450,11 +450,11 @@ function clearMapAll() {
   } catch (e) { console.warn('clearMapAll', e); }
 }
 // --- Инициализация ---
-(function bootAuth(){
+window.addEventListener('load', () => {
   bindAuthUI();
-  const saved=Auth.loadFromStorage();
-  if(saved) showRoomsScreen(); else showAuthScreen();
-})();
+  const saved = Auth.loadFromStorage();
+  if (saved) showRoomsScreen(); else showAuthScreen();
+});
 
 // Твой оригинальный script.js — инициализация карты, эшелоны, маркеры, UI, сохранение/загрузка.
 // Небольшие правки: добавлены хук-вызовы в местах создания/перемещения маркеров
