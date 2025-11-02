@@ -294,10 +294,13 @@ if (!bcrypt) {
 
     // For each room, get member count + owner username
     const rows = await Promise.all(rooms.map(async (r) => {
-      const [{ count }] = await supabaseClient
-        .from('room_members')
-        .select('id', { count: 'exact', head: false })
-        .eq('room_id', r.id);
+      const { count, error: countError } = await supabaseClient
+  .from('room_members')
+  .select('id', { count: 'exact', head: true })
+  .eq('room_id', r.id);
+
+if (countError) console.warn(countError);
+const memberCount = count || 0;
       const { data: ownerData } = await supabaseClient
         .from('users_mow2')
         .select('username')
