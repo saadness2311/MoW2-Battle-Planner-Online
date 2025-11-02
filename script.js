@@ -1,1063 +1,1059 @@
-// script.js — MULTIPLAYER scaffold for MoW2 Battle Planner
-// Replaces original client-only script with Supabase-based multiplayer behavior
-// Preserves UI and existing DOM structure. Do not include script.orig.js in index.html.
+// ====================== Part 1 ======================
+// script_full.js — ЧАСТЬ 1/3
+// Инициализация Supabase, авторизация, экраны входа и список комнат.
+// (Не трогаем визуал сайта — стили темно-серые сохраняются.)
 
-(function () {
-  // --------- CONFIG: replace with your Supabase details if necessary -----------
-  const SUPABASE_URL = 'https://zqklzhipwiifrrbyentg.supabase.co';
-  const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inpxa2x6aGlwd2lpZnJyYnllbnRnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjA5NzQ0ODYsImV4cCI6MjA3NjU1MDQ4Nn0.siMc2xCvoBEjwNVwaOVvjlOtDODs9yDo0IDyGl9uWso';
-  // ---------------------------------------------------------------------------
+/* Конфигурация Supabase — используй свои данные */
+const SUPABASE_URL = 'https://zqklzhipwiifrrbyentg.supabase.co';
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inpxa2x6aGlwd2lpZnJyYnllbnRnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjA5NzQ0ODYsImV4cCI6MjA3NjU1MDQ4Nn0.siMc2xCvoBEjwNVwaOVvjlOtDODs9yDo0IDyGl9uWso';
 
-  // Globals
-  const { createClient } = supabase; // UMD bundle exposes global `supabase`
-  const supabaseClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
-
-// ensure bcrypt global
-const bcrypt = window.bcrypt || (window.dcodeIO && window.dcodeIO.bcrypt);
-if (!bcrypt) {
-  console.error("bcryptjs не найден, убедись, что <script src='https://cdn.jsdelivr.net/npm/bcryptjs/dist/bcrypt.min.js'></script> подключён ПЕРЕД script.js");
-  alert("Ошибка: bcryptjs не загружен");
+if (typeof supabase === 'undefined' || !supabase.createClient) {
+  console.warn('Supabase JS не найден. Подключи UMD: https://cdn.jsdelivr.net/npm/@supabase/supabase-js/dist/umd/supabase.js');
+}
+if (typeof bcrypt === 'undefined') {
+  console.warn('bcryptjs не найден. Подключи: https://cdn.jsdelivr.net/npm/bcryptjs/dist/bcrypt.min.js');
 }
 
-  // Utils
-  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-  const nowIso = () => new Date().toISOString();
-  const uuid = () => (crypto && crypto.randomUUID) ? crypto.randomUUID() : (Math.random().toString(36).slice(2) + Date.now().toString(36));
+const supabaseClient = (typeof supabase !== 'undefined' && supabase.createClient)
+  ? supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
+  : null;
 
-  // Basic toast (non-intrusive)
-  const showToast = (msg, ttl = 3000) => {
-    let container = document.getElementById('mow2_toast_container');
-    if (!container) {
-      container = document.createElement('div');
-      container.id = 'mow2_toast_container';
-      Object.assign(container.style, {
-        position: 'fixed',
-        right: '12px',
-        bottom: '12px',
-        zIndex: 99999,
-        display: 'flex',
-        flexDirection: 'column',
-        gap: '6px',
-        alignItems: 'flex-end',
-        pointerEvents: 'none'
-      });
-      document.body.appendChild(container);
-    }
-    const el = document.createElement('div');
-    el.textContent = msg;
-    Object.assign(el.style, {
-      background: '#2b2b2b',
-      color: '#fff',
-      padding: '8px 10px',
-      borderRadius: '6px',
-      fontSize: '13px',
-      pointerEvents: 'auto',
-      boxShadow: '0 6px 18px rgba(0,0,0,0.5)'
-    });
-    container.appendChild(el);
-    setTimeout(() => {
-      el.style.transition = 'opacity 300ms';
-      el.style.opacity = 0;
-      setTimeout(() => el.remove(), 300);
-    }, ttl);
-    return el;
-  };
+// Вспомогательные утилиты (оставлены в том же стиле)
+function $id(id){ return document.getElementById(id); }
+function createEl(tag, cls){ const e = document.createElement(tag); if(cls) e.className = cls; return e; }
+function escapeHtml(s){ if(s==null) return ''; return String(s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]); }
+const nowIso = () => (new Date()).toISOString();
+const uuidv4 = () => (crypto && crypto.randomUUID) ? crypto.randomUUID() : ('id-'+Math.random().toString(36).slice(2,9));
 
-  // -------------------- AUTH (Custom: users_mow2 table) -----------------------
-  const auth = {
-    currentUser: null,
+// лёгкий toast
+function showToast(msg, ttl=2500){
+  let container = document.getElementById('mow2_toast_container');
+  if(!container){
+    container = document.createElement('div'); container.id='mow2_toast_container';
+    Object.assign(container.style,{position:'fixed',right:'12px',bottom:'12px',zIndex:99999,display:'flex',flexDirection:'column',gap:'6px',alignItems:'flex-end',pointerEvents:'none'});
+    document.body.appendChild(container);
+  }
+  const el = document.createElement('div'); el.textContent = msg;
+  Object.assign(el.style,{background:'#222',color:'#eee',padding:'8px 10px',borderRadius:'6px',fontSize:'13px',pointerEvents:'auto',boxShadow:'0 6px 18px rgba(0,0,0,0.6)'});
+  container.appendChild(el);
+  setTimeout(()=>{ el.style.transition='opacity 300ms'; el.style.opacity=0; setTimeout(()=>el.remove(),300); }, ttl);
+}
 
-    async register(username, password) {
-      if (!username) {
-        showToast('Укажите имя пользователя');
-        return null;
-      }
-      // allow any password length; hash with bcrypt
-      const hash = bcrypt.hashSync(password || '', 10);
-      // try insert, but check unique username
-      const { data: existing } = await supabaseClient
-        .from('users_mow2')
-        .select('id, username')
-        .eq('username', username)
-        .limit(1);
+// ----------------- AUTH (простая регистрация/логин, никакие ограничения не требуются) -----------------
+const Auth = {
+  currentUser: null,
+  async register(username, password){
+    if(!supabaseClient) throw new Error('Supabase не доступен');
+    if(!username) { showToast('Укажите ник'); return null; }
+    // проверка уникальности ника
+    const { data: existing, error: exErr } = await supabaseClient.from('users_mow2').select('id').eq('username', username).limit(1);
+    if (exErr){ console.error(exErr); showToast('Ошибка проверки ника'); return null; }
+    if (existing && existing.length>0){ showToast('Ник занят'); return null; }
+    const hash = (typeof bcrypt !== 'undefined') ? bcrypt.hashSync(password || '', 10) : (password || '');
+    const { data, error } = await supabaseClient.from('users_mow2').insert([{ username, password_hash: hash }]).select().single();
+    if (error){ console.error(error); showToast('Ошибка регистрации'); return null; }
+    this.currentUser = { id: data.id, username: data.username };
+    localStorage.setItem('mow2_user', JSON.stringify(this.currentUser));
+    showToast('Зарегистрирован');
+    return this.currentUser;
+  },
+  async login(username, password){
+    if(!supabaseClient) throw new Error('Supabase не доступен');
+    const { data, error } = await supabaseClient.from('users_mow2').select('id,username,password_hash').eq('username', username).limit(1).single();
+    if (error || !data){ showToast('Пользователь не найден'); return null; }
+    const ok = (typeof bcrypt !== 'undefined') ? bcrypt.compareSync(password || '', data.password_hash) : (password === data.password_hash);
+    if (!ok){ showToast('Неверный пароль'); return null; }
+    this.currentUser = { id: data.id, username: data.username };
+    localStorage.setItem('mow2_user', JSON.stringify(this.currentUser));
+    showToast('Вход выполнен');
+    return this.currentUser;
+  },
+  logout(){
+    localStorage.removeItem('mow2_user'); this.currentUser = null; showAuthScreen();
+  },
+  loadFromStorage(){
+    try{ const raw = localStorage.getItem('mow2_user'); if(!raw) return null; this.currentUser = JSON.parse(raw); return this.currentUser; }catch(e){return null;}
+  }
+};
 
-      if (existing && existing.length > 0) {
-        showToast('Ник уже занят');
-        return null;
-      }
+// ----------------- UI: отдельные HTML-экраны auth + rooms -----------------
+// Ожидаю, что в index.html нет элементов, поэтому создаю контейнеры динамически.
+// Они минималистичные, темно-серые и не ломают основной дизайн.
 
-      const { data, error } = await supabaseClient
-        .from('users_mow2')
-        .insert([{ username, password_hash: hash }])
-        .select()
-        .single();
-
-      if (error) {
-        console.error('register error', error);
-        showToast('Ошибка регистрации');
-        return null;
-      }
-      this.currentUser = { id: data.id, username: data.username };
-      localStorage.setItem('mow2_user', JSON.stringify(this.currentUser));
-      showToast('Регистрация успешна');
-      return this.currentUser;
-    },
-
-    async login(username, password) {
-      const { data, error } = await supabaseClient
-        .from('users_mow2')
-        .select('id, username, password_hash')
-        .eq('username', username)
-        .limit(1)
-        .single();
-
-      if (error || !data) {
-        showToast('Пользователь не найден');
-        return null;
-      }
-      const ok = bcrypt.compareSync(password || '', data.password_hash);
-      if (!ok) {
-        showToast('Неверный пароль');
-        return null;
-      }
-      this.currentUser = { id: data.id, username: data.username };
-      localStorage.setItem('mow2_user', JSON.stringify(this.currentUser));
-      showToast('Вход успешно выполнен');
-      return this.currentUser;
-    },
-
-    logout() {
-      localStorage.removeItem('mow2_user');
-      this.currentUser = null;
-      showToast('Выход');
-      // show auth screen
-      showAuthScreen();
-    },
-
-    loadFromStorage() {
-      try {
-        const raw = localStorage.getItem('mow2_user');
-        if (!raw) return null;
-        this.currentUser = JSON.parse(raw);
-        return this.currentUser;
-      } catch (e) {
-        console.error(e);
-        return null;
-      }
-    }
-  };
-
-  // -------------------- UI: AUTH & ROOMS screens -----------------------------
-  // We inject two simple screens into #auth-screen and #rooms-screen containers.
-  function showAuthScreen() {
-    const authContainer = document.getElementById('auth-screen');
-    const roomsContainer = document.getElementById('rooms-screen');
-    const app = document.querySelector('.app');
-    if (authContainer) authContainer.style.display = 'block';
-    if (roomsContainer) roomsContainer.style.display = 'none';
-    if (app) app.style.display = 'none';
-
-    authContainer.innerHTML = `
-      <div style="width:360px;margin:60px auto;background:#1f1f1f;padding:20px;border-radius:8px;color:#ddd">
-        <h2 style="margin:0 0 10px 0">MoW2 Battle Planner — Вход / Регистрация</h2>
-        <div style="display:flex;flex-direction:column;gap:8px">
-          <input id="mow2_input_username" placeholder="Ник" style="padding:8px;border-radius:6px;background:#2b2b2b;color:#fff;border:1px solid #444" />
-          <input id="mow2_input_password" placeholder="Пароль" type="password" style="padding:8px;border-radius:6px;background:#2b2b2b;color:#fff;border:1px solid #444" />
-          <div style="display:flex;gap:8px">
-            <button id="mow2_btn_login" style="flex:1;padding:8px">Войти</button>
-            <button id="mow2_btn_register" style="flex:1;padding:8px">Регистрация</button>
-          </div>
-          <div style="display:flex;gap:8px;margin-top:8px">
-            <button id="mow2_btn_guest" style="flex:1;padding:8px">Войти как гость</button>
-          </div>
+function ensureAuthAndRoomsContainers(){
+  if (!$id('mow2_auth_container')){
+    const auth = document.createElement('div'); auth.id='mow2_auth_container';
+    Object.assign(auth.style,{position:'fixed',left:0,top:0,right:0,bottom:0,display:'flex',alignItems:'center',justifyContent:'center',background:'rgba(6,6,6,0.7)',zIndex:9998});
+    auth.innerHTML = `
+      <div style="width:380px;background:#1b1b1b;padding:18px;border-radius:10px;color:#ddd;font-family:sans-serif">
+        <h2 style="margin:0 0 12px 0">MoW2 Battle Planner — Вход</h2>
+        <input id="mow2_in_username" placeholder="Ник" style="width:100%;padding:8px;border-radius:6px;background:#222;color:#fff;border:1px solid #333;margin-bottom:8px" />
+        <input id="mow2_in_password" type="password" placeholder="Пароль" style="width:100%;padding:8px;border-radius:6px;background:#222;color:#fff;border:1px solid #333;margin-bottom:12px" />
+        <div style="display:flex;gap:8px">
+          <button id="mow2_btn_login" style="flex:1;padding:8px">Войти</button>
+          <button id="mow2_btn_register" style="flex:1;padding:8px">Регистрация</button>
+        </div>
+        <div style="margin-top:10px;display:flex;gap:8px">
+          <button id="mow2_btn_guest" style="flex:1;padding:8px">Войти как гость</button>
         </div>
       </div>
     `;
-
-    document.getElementById('mow2_btn_login').onclick = async () => {
-      const username = document.getElementById('mow2_input_username').value.trim();
-      const password = document.getElementById('mow2_input_password').value;
-      const u = await auth.login(username, password);
-      if (u) showRoomsScreen();
-    };
-
-    document.getElementById('mow2_btn_register').onclick = async () => {
-      const username = document.getElementById('mow2_input_username').value.trim();
-      const password = document.getElementById('mow2_input_password').value;
-      const u = await auth.register(username, password);
-      if (u) showRoomsScreen();
-    };
-
-    document.getElementById('mow2_btn_guest').onclick = async () => {
-      // Create ephemeral guest user with unique name
-      const guestName = `guest_${Math.random().toString(36).slice(2,8)}`;
-      const u = await auth.register(guestName, uuid()); // random password
-      if (u) showRoomsScreen();
-    };
+    document.body.appendChild(auth);
   }
 
-  async function showRoomsScreen() {
-    const authContainer = document.getElementById('auth-screen');
-    const roomsContainer = document.getElementById('rooms-screen');
-    const app = document.querySelector('.app');
-    if (authContainer) authContainer.style.display = 'none';
-    if (roomsContainer) roomsContainer.style.display = 'block';
-    if (app) app.style.display = 'none';
-
-    // Build rooms UI
-    roomsContainer.innerHTML = `
-      <div style="max-width:900px;margin:24px auto;color:#ddd">
+  if (!$id('mow2_rooms_container')){
+    const rooms = document.createElement('div'); rooms.id='mow2_rooms_container';
+    Object.assign(rooms.style,{position:'fixed',left:0,top:0,right:0,bottom:0,display:'none',alignItems:'center',justifyContent:'center',background:'rgba(6,6,6,0.6)',zIndex:9998});
+    rooms.innerHTML = `
+      <div style="width:820px;background:#111;padding:16px;border-radius:10px;color:#ddd;font-family:sans-serif">
         <div style="display:flex;justify-content:space-between;align-items:center">
-          <h2 style="margin:0">Комнаты — MoW2 Battle Planner</h2>
-          <div>
-            <span style="margin-right:12px">Пользователь: <b>${auth.currentUser.username}</b></span>
-            <button id="mow2_btn_logout">Выйти</button>
-          </div>
+          <h2 style="margin:0">Комнаты</h2>
+          <div><span id="mow2_user_label" style="margin-right:12px;color:#bbb"></span><button id="mow2_btn_logout">Выйти</button></div>
         </div>
-        <div style="margin-top:12px;display:flex;gap:12px">
-          <input id="mow2_new_room_name" placeholder="Название комнаты" style="flex:1;padding:8px;border-radius:6px;background:#2b2b2b;color:#fff;border:1px solid #444" />
-          <input id="mow2_new_room_pwd" placeholder="Пароль (опционально)" style="width:220px;padding:8px;border-radius:6px;background:#2b2b2b;color:#fff;border:1px solid #444" />
-          <button id="mow2_btn_create_room">Создать комнату</button>
+        <div style="margin-top:10px;display:flex;gap:8px">
+          <input id="mow2_room_name" placeholder="Название комнаты" style="flex:1;padding:8px;border-radius:6px;background:#222;color:#fff;border:1px solid #333" />
+          <input id="mow2_room_pwd" placeholder="Пароль (опционально)" style="width:220px;padding:8px;border-radius:6px;background:#222;color:#fff;border:1px solid #333" />
+          <button id="mow2_btn_create_room" style="padding:8px">Создать</button>
         </div>
-        <div id="mow2_rooms_list" style="margin-top:16px"></div>
+        <div id="mow2_rooms_list" style="margin-top:12px;max-height:360px;overflow:auto"></div>
       </div>
     `;
-
-    document.getElementById('mow2_btn_logout').onclick = () => {
-      auth.logout();
-    };
-
-    document.getElementById('mow2_btn_create_room').onclick = async () => {
-      const name = document.getElementById('mow2_new_room_name').value.trim();
-      const pwd = document.getElementById('mow2_new_room_pwd').value;
-      if (!name) {
-        showToast('Введите имя комнаты');
-        return;
-      }
-      // Check user hasn't created 4 rooms
-      const { data: ownedRooms } = await supabaseClient
-        .from('rooms')
-        .select('id')
-        .eq('owner_user_id', auth.currentUser.id);
-
-      if (ownedRooms && ownedRooms.length >= 4) {
-        showToast('Вы уже создали 4 комнаты (лимит)');
-        return;
-      }
-
-      const password_hash = pwd ? bcrypt.hashSync(pwd, 10) : null;
-      const { data, error } = await supabaseClient
-        .from('rooms')
-        .insert([{
-          name,
-          password_hash,
-          owner_user_id: auth.currentUser.id,
-          current_echelon: 1,
-          settings: {}
-        }])
-        .select()
-        .single();
-
-      if (error) {
-        console.error('create room error', error);
-        showToast('Ошибка создания комнаты');
-        return;
-      }
-
-      // Add creator to room_members
-      await supabaseClient.from('room_members').insert([{
-        room_id: data.id,
-        user_id: auth.currentUser.id,
-        is_owner: true
-      }]);
-
-      showToast('Комната создана');
-      await loadRoomsList();
-    };
-
-    await loadRoomsList();
+    document.body.appendChild(rooms);
   }
+}
 
-  async function loadRoomsList() {
-    const container = document.getElementById('mow2_rooms_list');
-    container.innerHTML = '<div style="color:#aaa">Загрузка...</div>';
-    // join room_members count
-    const { data: rooms, error } = await supabaseClient
-      .from('rooms')
-      .select('id, name, owner_user_id, created_at, max_players, settings');
+function showAuthScreen(){
+  ensureAuthAndRoomsContainers();
+  $id('mow2_auth_container').style.display='flex';
+  $id('mow2_rooms_container').style.display='none';
+  // hide main map / app area to avoid user interacting until logged in
+  document.querySelectorAll('.app, #map').forEach(el=>{ if(el) el.style.pointerEvents='none'; });
+}
 
-    if (error) {
-      console.error('loadRoomsList error', error);
-      container.innerHTML = '<div style="color:#faa">Ошибка загрузки комнат</div>';
-      return;
-    }
+function showRoomsScreen(){
+  ensureAuthAndRoomsContainers();
+  $id('mow2_auth_container').style.display='none';
+  $id('mow2_rooms_container').style.display='flex';
+  document.querySelectorAll('.app, #map').forEach(el=>{ if(el) el.style.pointerEvents='none'; });
+  // fill user label
+  const u = Auth.currentUser || Auth.loadFromStorage();
+  if (u) $id('mow2_user_label').textContent = `Пользователь: ${u.username}`;
+  loadRoomsList();
+}
 
-    // For each room, get member count + owner username
-    const rows = await Promise.all(rooms.map(async (r) => {
-      const { count, error: countError } = await supabaseClient
-  .from('room_members')
-  .select('id', { count: 'exact', head: true })
-  .eq('room_id', r.id);
+// --------- Bind auth UI handlers ----------
+function bindAuthUI(){
+  ensureAuthAndRoomsContainers();
+  $id('mow2_btn_login').onclick = async ()=> {
+    const username = $id('mow2_in_username').value.trim();
+    const password = $id('mow2_in_password').value;
+    const u = await Auth.login(username, password);
+    if (u) showRoomsScreen();
+  };
+  $id('mow2_btn_register').onclick = async ()=> {
+    const username = $id('mow2_in_username').value.trim();
+    const password = $id('mow2_in_password').value;
+    const u = await Auth.register(username, password);
+    if (u) showRoomsScreen();
+  };
+  $id('mow2_btn_guest').onclick = async ()=> {
+    const guest = 'guest_' + Math.random().toString(36).slice(2,8);
+    const u = await Auth.register(guest, uuidv4());
+    if (u) showRoomsScreen();
+  };
+}
 
-if (countError) console.warn(countError);
-const memberCount = count || 0;
-      const { data: ownerData } = await supabaseClient
-        .from('users_mow2')
-        .select('username')
-        .eq('id', r.owner_user_id)
-        .limit(1);
-      return {
-        id: r.id,
-        name: r.name,
-        owner_username: ownerData && ownerData[0] ? ownerData[0].username : '—',
-        members: count || 0,
-        max_players: r.max_players || 50
-      };
-    }));
-
-    container.innerHTML = rows.map(r => {
-      return `
-        <div style="display:flex;justify-content:space-between;align-items:center;padding:8px;border-radius:6px;background:#1b1b1b;margin-bottom:8px">
-          <div>
-            <div style="font-weight:600">${escapeHtml(r.name)}</div>
-            <div style="font-size:12px;color:#999">Создатель: ${escapeHtml(r.owner_username)} · ${r.members}/${r.max_players} игроков</div>
-          </div>
-          <div style="display:flex;gap:8px">
-            <button class="mow2_btn_join_room" data-roomid="${r.id}">Войти</button>
-            <button class="mow2_btn_view_room" data-roomid="${r.id}">Просмотр</button>
-          </div>
-        </div>
-      `;
-    }).join('');
-
-    // bind
-    container.querySelectorAll('.mow2_btn_join_room').forEach(btn => {
-      btn.onclick = async (e) => {
-        const roomId = btn.getAttribute('data-roomid');
-        // check if room has password
-        const { data: room } = await supabaseClient.from('rooms').select('id,name,password_hash,owner_user_id').eq('id', roomId).single();
-        if (!room) { showToast('Комната не найдена'); await loadRoomsList(); return; }
-        if (room.password_hash) {
-          const pwd = prompt('Введите пароль для комнаты:') || '';
-          const ok = bcrypt.compareSync(pwd, room.password_hash);
-          if (!ok) {
-            showToast('Неверный пароль');
-            return;
-          }
-        }
-        // try to insert into room_members
-        try {
-          await supabaseClient.from('room_members').insert([{
-            room_id: roomId,
-            user_id: auth.currentUser.id,
-            is_owner: room.owner_user_id === auth.currentUser.id
-          }]);
-        } catch (err) {
-          // could be unique constraint error, ignore
-        }
-        enterRoom(roomId);
-      };
-    });
-
-    container.querySelectorAll('.mow2_btn_view_room').forEach(btn => {
-      btn.onclick = async () => {
-        const roomId = btn.getAttribute('data-roomid');
-        // View mode: enter room but in spectator mode (still a member)
-        try {
-          await supabaseClient.from('room_members').insert([{
-            room_id: roomId,
-            user_id: auth.currentUser.id,
-            is_owner: false
-          }]);
-        } catch (err) { }
-        enterRoom(roomId);
-      };
-    });
+// --------- Rooms list / creation ----------
+async function loadRoomsList(){
+  const container = $id('mow2_rooms_list');
+  if (!container) return;
+  container.innerHTML = '<div style="color:#999;padding:8px">Загрузка...</div>';
+  const { data: rooms, error } = await supabaseClient.from('rooms').select('id,name,owner_user_id,max_players,created_at');
+  if (error){ console.error(error); container.innerHTML = '<div style="color:#faa">Ошибка загрузки</div>'; return; }
+  // fetch owners
+  const ownerIds = Array.from(new Set((rooms||[]).map(r=>r.owner_user_id).filter(Boolean)));
+  const owners = {};
+  if (ownerIds.length){
+    const { data: users } = await supabaseClient.from('users_mow2').select('id,username').in('id', ownerIds);
+    (users||[]).forEach(u=> owners[u.id]=u.username);
   }
-
-  function escapeHtml(s) {
-    if (!s) return '';
-    return s.replace(/[&<>"']/g, (m) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":"&#39;"}[m]));
-  }
-
-  // -------------------- MAP + ROOM STATE + SYNC -----------------------------
-
-  // Leaflet map
-  let map = null;
-  let markersLayer = null; // L.LayerGroup for markers
-  let localMarkerMap = new Map(); // markerId -> { leafletMarker, meta }
-  let currentRoom = null; // room object from DB
-  let roomChannel = null;   // supabase realtime channel for this room
-
-  // Prevent duplicate creations
-  const recentActionUUIDs = new Set();
-
-  // Debounce create marker button
-  let createMarkerDebounce = false;
-
-  // Initialize Leaflet map (keeps previous visual settings)
-  function initMap() {
-    if (map) return;
-    map = L.map('map', { center: [51.505, -0.09], zoom: 3, preferCanvas: true });
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      attribution: '&copy; OSM'
-    }).addTo(map);
-
-    markersLayer = L.layerGroup().addTo(map);
-
-    // Integrate original controls: If original code had draw controls, add them here as needed
-    // /* INTEGRATE WITH ORIGINAL: adding leaflet-draw control / toolbar if present in original script */
-  }
-
-  // Create leaflet marker with proper icon
-  function createLeafletMarker(markerRow) {
-    // markerRow: { id, symb_name, x, y, rotation, meta }
-    const lat = parseFloat(markerRow.y);
-    const lng = parseFloat(markerRow.x);
-    const id = markerRow.id;
-    // Determine icon — try to use meta.icon_url or construct from symb_name/ assets folder
-    let iconUrl = (markerRow.meta && markerRow.meta.icon_url) ? markerRow.meta.icon_url :
-      `assets/symbols/${markerRow.symb_name}.png`; // fallback path; adapt to your assets structure
-
-    const icon = L.icon({
-      iconUrl,
-      iconSize: [32, 32],
-      iconAnchor: [16, 16]
-    });
-
-    const marker = L.marker([lat, lng], {
-      draggable: true,
-      rotationAngle: markerRow.rotation || 0,
-      icon: icon
-    });
-
-    marker.on('dragstart', () => {
-      marker._draggingFrom = marker.getLatLng();
-    });
-
-    marker.on('dragend', async (ev) => {
-      // commit only if user has the turn or is owner of room
-      const newLatLng = marker.getLatLng();
-      await commitMarkerMove(id, newLatLng.lng, newLatLng.lat, marker);
-    });
-
-    marker.on('click', (e) => {
-      // optionally show small info near cursor
-      showTempInfo(`ID: ${id}`, e.latlng);
-    });
-
-    return marker;
-  }
-
-  function showTempInfo(text, latlng) {
-    // tiny transient tooltip near cursor
-    const info = L.popup({
-      closeButton: false,
-      autoClose: true,
-      className: 'mow2-mini-info'
-    }).setLatLng(latlng).setContent(`<div style="color:#fff;font-size:12px">${escapeHtml(text)}</div>`);
-    info.openOn(map);
-    setTimeout(() => map.closePopup(info), 1200);
-  }
-
-  // Add marker locally and to map (but DB insert is separate)
-  function addMarkerToMapLocally(markerRow) {
-    if (localMarkerMap.has(markerRow.id)) {
-      // update existing
-      const entry = localMarkerMap.get(markerRow.id);
-      const leafletMarker = entry.leafletMarker;
-      // animate movement
-      animateMarkerTo(leafletMarker, [parseFloat(markerRow.y), parseFloat(markerRow.x)], 300);
-      return;
-    }
-    const leafletMarker = createLeafletMarker(markerRow);
-    leafletMarker.addTo(markersLayer);
-    localMarkerMap.set(markerRow.id, { leafletMarker, meta: markerRow.meta || {} });
-  }
-
-  function animateMarkerTo(leafletMarker, latlngArr, duration = 400) {
-    // simple linear interpolation
-    if (!leafletMarker) return;
-    const from = leafletMarker.getLatLng();
-    const to = L.latLng(latlngArr[0], latlngArr[1]);
-    const steps = Math.max(6, Math.round(duration / 40));
-    let i = 0;
-    const stepLat = (to.lat - from.lat) / steps;
-    const stepLng = (to.lng - from.lng) / steps;
-
-    const iv = setInterval(() => {
-      i++;
-      const next = L.latLng(from.lat + stepLat * i, from.lng + stepLng * i);
-      leafletMarker.setLatLng(next);
-      if (i >= steps) clearInterval(iv);
-    }, duration / steps);
-  }
-
-  // Remove marker locally
-  function removeMarkerLocally(markerId) {
-    if (!localMarkerMap.has(markerId)) return;
-    const entry = localMarkerMap.get(markerId);
-    try {
-      markersLayer.removeLayer(entry.leafletMarker);
-    } catch (e) { }
-    localMarkerMap.delete(markerId);
-  }
-
-  // -------------------- DB OPERATIONS: markers, room enter/leave ---------------
-  async function enterRoom(roomId) {
-    // fetch room info
-    const { data: room, error } = await supabaseClient
-      .from('rooms')
-      .select('*')
-      .eq('id', roomId)
-      .limit(1)
-      .single();
-
-    if (error || !room) {
-      showToast('Комната не найдена');
-      console.error(error);
-      return;
-    }
-    currentRoom = room;
-    // switch UI: hide rooms screen, show main app
-    document.getElementById('rooms-screen').style.display = 'none';
-    document.querySelector('.app').style.display = 'flex';
-
-    initMap();
-    // center / zoom logic: optionally use settings
-    if (currentRoom.settings && currentRoom.settings.center) {
-      try {
-        const c = currentRoom.settings.center;
-        map.setView([c[0], c[1]], c[2] || 3);
-      } catch (e) {}
-    }
-
-    // set up room panel (top center)
-    buildRoomPanel();
-
-    // subscribe to realtime events for this room
-    await subscribeToRoom(roomId);
-
-    // fetch current markers and draw them (for current echelon)
-    await loadMarkersForRoom(roomId, currentRoom.current_echelon || 1);
-
-    // fetch members and display
-    await loadRoomMembers(roomId);
-  }
-
-  async function leaveRoom() {
-    // unsubscribe and cleanup
-    if (roomChannel) {
-      try {
-        await supabaseClient.removeChannel(roomChannel);
-      } catch (e) {
-        // older API fallback
-        try { roomChannel.unsubscribe(); } catch (e2) {}
-      }
-      roomChannel = null;
-    }
-    currentRoom = null;
-    // clear map layers
-    localMarkerMap.forEach((v, k) => {
-      try { markersLayer.removeLayer(v.leafletMarker); } catch (e) {}
-    });
-    localMarkerMap.clear();
-    // show rooms screen
-    document.querySelector('.app').style.display = 'none';
-    document.getElementById('rooms-screen').style.display = 'block';
-    // reload rooms list
-    await loadRoomsList();
-  }
-
-  async function loadMarkersForRoom(roomId, echelon = 1) {
-    // fetch markers for this room and echelon
-    const { data: rows, error } = await supabaseClient
-      .from('markers')
-      .select('*')
-      .eq('room_id', roomId)
-      .eq('echelon', echelon);
-
-    if (error) {
-      console.error('loadMarkersForRoom error', error);
-      return;
-    }
-    // clear current local map
-    localMarkerMap.forEach((v, k) => {
-      try { markersLayer.removeLayer(v.leafletMarker); } catch (e) {}
-    });
-    localMarkerMap.clear();
-
-    rows.forEach(r => addMarkerToMapLocally(r));
-  }
-
-  async function loadRoomMembers(roomId) {
-    const { data: members } = await supabaseClient
-      .from('room_members')
-      .select('id,user_id,is_owner,joined_at,users_mow2(username)')
-      .eq('room_id', roomId);
-
-    // show in panel
-    renderMembersInPanel(members || []);
-  }
-
-  // commit marker move to DB (dragend)
-  async function commitMarkerMove(markerId, x, y, leafletMarker = null) {
-    if (!currentRoom) {
-      showToast('Не в комнате');
-      // revert if possible
-      if (leafletMarker && leafletMarker._draggingFrom) leafletMarker.setLatLng(leafletMarker._draggingFrom);
-      return;
-    }
-    // permission check
-    const meId = auth.currentUser.id;
-    if (currentRoom.current_turn_user_id && currentRoom.current_turn_user_id !== meId && currentRoom.owner_user_id !== meId) {
-      showToast('Сейчас не ваш ход');
-      // revert marker
-      if (leafletMarker && leafletMarker._draggingFrom) leafletMarker.setLatLng(leafletMarker._draggingFrom);
-      return;
-    }
-
-    // update in DB
-    try {
-      const { data, error } = await supabaseClient
-        .from('markers')
-        .update({ x: parseFloat(x), y: parseFloat(y), updated_at: nowIso() })
-        .eq('id', markerId)
-        .select();
-
-      if (error) {
-        console.error('commitMarkerMove error', error);
-        showToast('Не удалось переместить маркер');
-        // revert
-        if (leafletMarker && leafletMarker._draggingFrom) leafletMarker.setLatLng(leafletMarker._draggingFrom);
-        return;
-      }
-      // update was applied; server will send realtime event and animate others
-    } catch (e) {
-      console.error(e);
-    }
-  }
-
-  // create marker (UI/toolbar should call this). Adds marker to DB (only if player has turn)
-  async function createMarker(symb_name, x, y, rotation = 0, meta = {}) {
-    if (!currentRoom) {
-      showToast('Вы не в комнате');
-      return null;
-    }
-    // permission: only current turn or owner
-    const meId = auth.currentUser.id;
-    if (currentRoom.current_turn_user_id && currentRoom.current_turn_user_id !== meId && currentRoom.owner_user_id !== meId) {
-      showToast('Не ваш ход');
-      return null;
-    }
-
-    if (createMarkerDebounce) {
-      showToast('Подождите...');
-      return null;
-    }
-    createMarkerDebounce = true;
-    setTimeout(() => createMarkerDebounce = false, 250);
-
-    // generate action_uuid and store in meta to avoid duplicates
-    const action_uuid = uuid();
-    meta.action_uuid = action_uuid;
-    recentActionUUIDs.add(action_uuid);
-
-    // Insert into DB
-    const payload = {
-      room_id: currentRoom.id,
-      echelon: currentRoom.current_echelon || 1,
-      owner_user_id: meId,
-      symb_name,
-      x: parseFloat(x),
-      y: parseFloat(y),
-      rotation: rotation || 0,
-      meta
-    };
-
-    try {
-      const { data, error } = await supabaseClient
-        .from('markers')
-        .insert([payload])
-        .select()
-        .single();
-
-      if (error) {
-        console.error('createMarker error', error);
-        showToast('Ошибка создания маркера');
-        return null;
-      }
-      // Created — server will broadcast insert, local map will update
-      return data;
-    } catch (e) {
-      console.error(e);
-      showToast('Ошибка создания маркера');
-      return null;
-    }
-  }
-
-  // bulk create markers (array of {symb_name,x,y,rotation,meta})
-  async function bulkCreateMarkers(items) {
-    if (!currentRoom) { showToast('Не в комнате'); return; }
-    const meId = auth.currentUser.id;
-    if (currentRoom.current_turn_user_id && currentRoom.current_turn_user_id !== meId && currentRoom.owner_user_id !== meId) {
-      showToast('Не ваш ход');
-      return;
-    }
-    if (!Array.isArray(items) || items.length === 0) return;
-    // add action_uuid if missing for each
-    items = items.map(it => {
-      const a = Object.assign({}, it);
-      if (!a.meta) a.meta = {};
-      if (!a.meta.action_uuid) a.meta.action_uuid = uuid();
-      return a;
-    });
-    // batch insert
-    const payload = items.map(it => ({
-      room_id: currentRoom.id,
-      echelon: currentRoom.current_echelon || 1,
-      owner_user_id: meId,
-      symb_name: it.symb_name,
-      x: parseFloat(it.x),
-      y: parseFloat(it.y),
-      rotation: it.rotation || 0,
-      meta: it.meta || {}
-    }));
-    try {
-      // Insert array
-      const { data, error } = await supabaseClient
-        .from('markers')
-        .insert(payload)
-        .select();
-
-      if (error) {
-        console.error('bulkCreateMarkers error', error);
-        showToast('Ошибка массовой вставки');
-        return;
-      }
-      showToast(`Добавлено ${data.length} символов`);
-    } catch (e) {
-      console.error(e);
-      showToast('Ошибка массовой вставки');
-    }
-  }
-
-  // delete all markers in room (owner only)
-  async function clearAllMarkersInRoom() {
-    if (!currentRoom) return;
-    const meId = auth.currentUser.id;
-    if (currentRoom.owner_user_id !== meId) { showToast('Только создатель может очищать карту'); return; }
-    try {
-      await supabaseClient.from('markers').delete().eq('room_id', currentRoom.id);
-      await supabaseClient.from('drawings').delete().eq('room_id', currentRoom.id);
-      showToast('Карта очищена');
-    } catch (e) {
-      console.error(e);
-      showToast('Ошибка очистки');
-    }
-  }
-
-  // -------------------- RealTime: subscription per-room ---------------------
-  async function subscribeToRoom(roomId) {
-    // remove old channel
-    if (roomChannel) {
-      try {
-        await supabaseClient.removeChannel(roomChannel);
-      } catch (e) { }
-      roomChannel = null;
-    }
-
-    // using new channel API
-    try {
-      // channel name
-      const channel = supabaseClient.channel(`room-${roomId}`);
-
-      // subscribe to markers changes filtered by room_id
-      channel.on('postgres_changes', {
-        event: '*',
-        schema: 'public',
-        table: 'markers',
-        filter: `room_id=eq.${roomId}`
-      }, (payload) => {
-        const ev = payload.eventType; // INSERT | UPDATE | DELETE
-        const record = payload.new || payload.old;
-        if (ev === 'INSERT') {
-          // prevent duplicate apply
-          if (record.meta && record.meta.action_uuid && recentActionUUIDs.has(record.meta.action_uuid)) {
-            // we created this locally recently; still render
-            recentActionUUIDs.delete(record.meta.action_uuid);
-          }
-          addMarkerToMapLocally(record);
-        } else if (ev === 'UPDATE') {
-          addMarkerToMapLocally(record);
-        } else if (ev === 'DELETE') {
-          removeMarkerLocally(record.id);
-        }
-      });
-
-      // drawings
-      channel.on('postgres_changes', { event: '*', schema: 'public', table: 'drawings', filter: `room_id=eq.${roomId}` }, (payload) => {
-        // TODO: handle drawings (polylines/polygons)
-        // For now, simply reload drawings if needed
-      });
-
-      // room members changes
-      channel.on('postgres_changes', { event: '*', schema: 'public', table: 'room_members', filter: `room_id=eq.${roomId}` }, (payload) => {
-        // reload members
-        loadRoomMembers(roomId);
-      });
-
-      // room meta changes (current_turn_user_id etc.)
-      channel.on('postgres_changes', { event: '*', schema: 'public', table: 'rooms', filter: `id=eq.${roomId}` }, (payload) => {
-        if (payload.eventType === 'UPDATE') {
-          currentRoom = Object.assign({}, currentRoom, payload.new);
-          updateRoomPanelCurrentTurn();
-        }
-      });
-
-      await channel.subscribe();
-      roomChannel = channel;
-    } catch (e) {
-      console.error('subscribeToRoom error', e);
-      showToast('Realtime subscription failed');
-    }
-  }
-
-  // -------------------- ROOM PANEL (top center) -----------------------------
-  function buildRoomPanel() {
-    // Remove existing panel if any
-    const existing = document.getElementById('mow2_room_panel');
-    if (existing) existing.remove();
-
-    const panel = document.createElement('div');
-    panel.id = 'mow2_room_panel';
-    Object.assign(panel.style, {
-      position: 'fixed',
-      top: '8px',
-      left: '50%',
-      transform: 'translateX(-50%)',
-      zIndex: 99999,
-      background: '#1c1c1c',
-      color: '#ddd',
-      padding: '8px 12px',
-      borderRadius: '8px',
-      boxShadow: '0 6px 18px rgba(0,0,0,0.6)',
-      minWidth: '360px'
-    });
-
-    panel.innerHTML = `
-      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
-        <div>
-          <div style="font-weight:700">${escapeHtml(currentRoom.name || 'Комната')}</div>
-          <div id="mow2_panel_room_info" style="font-size:12px;color:#aaa">Идёт загрузка...</div>
-        </div>
-        <div style="display:flex;gap:6px;align-items:center">
-          <button id="mow2_toggle_panel_btn" title="Свернуть/развернуть">—</button>
-          <button id="mow2_leave_room_btn" title="Выйти">Выйти</button>
-        </div>
+  // build list
+  container.innerHTML = (rooms||[]).map(r=>{
+    const owner = owners[r.owner_user_id] || '—';
+    return `<div style="display:flex;justify-content:space-between;align-items:center;padding:8px;border-radius:6px;background:#151515;margin-bottom:8px">
+      <div>
+        <div style="font-weight:600">${escapeHtml(r.name)}</div>
+        <div style="font-size:12px;color:#999">Создатель: ${escapeHtml(owner)}</div>
       </div>
-      <div id="mow2_panel_players" style="margin-top:8px;display:flex;flex-direction:column;gap:6px;max-height:160px;overflow:auto"></div>
-      <div id="mow2_panel_owner_actions" style="margin-top:8px;display:flex;gap:8px;justify-content:flex-end"></div>
-    `;
+      <div style="display:flex;gap:8px">
+        <button class="mow2_join" data-id="${r.id}">Войти</button>
+        <button class="mow2_view" data-id="${r.id}">Просмотр</button>
+      </div>
+    </div>`;
+  }).join('');
+  // bind
+  container.querySelectorAll('.mow2_join').forEach(b=> b.onclick = async (e)=> { const id=b.dataset.id; await attemptJoinRoom(id); });
+  container.querySelectorAll('.mow2_view').forEach(b=> b.onclick = async (e)=> { const id=b.dataset.id; await enterRoomAsViewer(id); });
+}
 
-    document.body.appendChild(panel);
+$id && $id('mow2_btn_create_room') && $id('mow2_btn_create_room').addEventListener('click', async ()=>{
+  const name = $id('mow2_room_name').value.trim();
+  const pwd = $id('mow2_room_pwd').value || null;
+  if (!name) return showToast('Введите название комнаты');
+  // check owned rooms count
+  const { data: owned } = await supabaseClient.from('rooms').select('id').eq('owner_user_id', Auth.currentUser.id);
+  if (owned && owned.length >= 4) { showToast('Лимит: вы уже создали 4 комнаты'); return; }
+  const password_hash = pwd ? (typeof bcrypt !== 'undefined' ? bcrypt.hashSync(pwd,10) : pwd) : null;
+  const { data, error } = await supabaseClient.from('rooms').insert([{
+    name, password_hash, owner_user_id: Auth.currentUser.id, current_echelon:1, max_players:50, settings: {}
+  }]).select().single();
+  if (error){ console.error(error); showToast('Ошибка создания комнаты'); return; }
+  // add membership
+  await supabaseClient.from('room_members').insert([{ room_id: data.id, user_id: Auth.currentUser.id, is_owner:true }]);
+  showToast('Комната создана');
+  loadRoomsList();
+});
 
-    document.getElementById('mow2_toggle_panel_btn').onclick = () => {
-      const playersDiv = document.getElementById('mow2_panel_players');
-      if (!playersDiv) return;
-      if (playersDiv.style.display === 'none') {
-        playersDiv.style.display = 'flex';
-        document.getElementById('mow2_toggle_panel_btn').textContent = '—';
-      } else {
-        playersDiv.style.display = 'none';
-        document.getElementById('mow2_toggle_panel_btn').textContent = '+';
-      }
-    };
-
-    document.getElementById('mow2_leave_room_btn').onclick = async () => {
-      // remove from room_members
-      try {
-        await supabaseClient.from('room_members').delete().eq('room_id', currentRoom.id).eq('user_id', auth.currentUser.id);
-      } catch (e) {}
-      await leaveRoom();
-    };
-
-    // owner actions container: kick, transfer turn, delete room
-    const ownerActions = document.getElementById('mow2_panel_owner_actions');
-    ownerActions.innerHTML = `
-      <button id="mow2_btn_transfer_turn" title="Передать ход">Передать ход</button>
-      <button id="mow2_btn_clear_map" title="Очистить карту">Очистить</button>
-      <button id="mow2_btn_delete_room" title="Удалить комнату">Удалить комнату</button>
-    `;
-
-    document.getElementById('mow2_btn_transfer_turn').onclick = async () => {
-      // show quick select of users
-      const members = await getRoomMembersList();
-      const user = prompt(`Передать ход кому? Введите ник из списка:\n${members.map(m=>m.username).join(', ')}`);
-      if (!user) return;
-      const target = members.find(m => m.username === user);
-      if (!target) { showToast('Игрок не найден'); return; }
-      // only owner can transfer
-      if (auth.currentUser.id !== currentRoom.owner_user_id) { showToast('Только создатель может передавать ход'); return; }
-      await supabaseClient.from('rooms').update({ current_turn_user_id: target.user_id }).eq('id', currentRoom.id);
-      showToast(`Ход передан ${target.username}`);
-    };
-
-    document.getElementById('mow2_btn_clear_map').onclick = async () => {
-      if (auth.currentUser.id !== currentRoom.owner_user_id) { showToast('Только создатель может очищать'); return; }
-      if (!confirm('Очистить карту (все маркеры и рисунки)?')) return;
-      await clearAllMarkersInRoom();
-    };
-
-    document.getElementById('mow2_btn_delete_room').onclick = async () => {
-      if (auth.currentUser.id !== currentRoom.owner_user_id) { showToast('Только создатель может удалить комнату'); return; }
-      if (!confirm('Удалить комнату и все связанные данные?')) return;
-      try {
-        await supabaseClient.from('rooms').delete().eq('id', currentRoom.id);
-        showToast('Комната удалена');
-        await leaveRoom();
-      } catch (e) {
-        console.error(e);
-        showToast('Ошибка удаления комнаты');
-      }
-    };
-
-    // finally, refresh info
-    updateRoomPanelCurrentTurn();
-    loadRoomMembers(currentRoom.id);
+// пытаемся присоединиться (если пароль есть — запросить)
+async function attemptJoinRoom(roomId){
+  const { data: room, error } = await supabaseClient.from('rooms').select('id,name,password_hash,owner_user_id').eq('id', roomId).single();
+  if (error || !room) return showToast('Комната не найдена');
+  if (room.password_hash){
+    const pwd = prompt('Введите пароль комнаты:') || '';
+    const ok = (typeof bcrypt !== 'undefined') ? bcrypt.compareSync(pwd, room.password_hash) : (pwd === room.password_hash);
+    if (!ok) return showToast('Неверный пароль');
   }
+  // add member if not exists
+  try{ await supabaseClient.from('room_members').insert([{ room_id: roomId, user_id: Auth.currentUser.id, is_owner: room.owner_user_id===Auth.currentUser.id }]); }catch(e){}
+  await enterRoom(roomId); // см. Part 3: enterRoom интегрирован с картой
+}
 
-  async function getRoomMembersList() {
-    const { data } = await supabaseClient.from('room_members').select('user_id, users_mow2(username)').eq('room_id', currentRoom.id);
-    if (!data) return [];
-    return data.map(r => ({ user_id: r.user_id, username: r.users_mow2 && r.users_mow2.username ? r.users_mow2.username : '—' }));
+async function enterRoomAsViewer(roomId){
+  try{ await supabaseClient.from('room_members').insert([{ room_id: roomId, user_id: Auth.currentUser.id, is_owner:false }]); }catch(e){}
+  await enterRoom(roomId);
+}
+
+// logout
+$id && $id('mow2_btn_logout') && $id('mow2_btn_logout').addEventListener('click', ()=>{ Auth.logout(); });
+
+// Инициализация: если пользователь сохранён — открыть rooms, иначе auth
+(function bootAuth(){
+  bindAuthUI();
+  const saved = Auth.loadFromStorage();
+  if (saved) showRoomsScreen(); else showAuthScreen();
+})();
+
+// ====================== Part 2 ======================
+// script_full.js — ЧАСТЬ 2/3
+// Твой оригинальный script.js — инициализация карты, эшелоны, маркеры, UI, сохранение/загрузка.
+// Небольшие правки: добавлены хук-вызовы в местах создания/перемещения маркеров
+// чтобы интегрировать с Supabase, если пользователь в комнате.
+
+
+// ------------ Конфигурация ------------
+const MAP_COUNT = 25; // теперь map1..map25
+const MAP_FILE_PREFIX = "map"; // map1.jpg
+const MAP_FOLDER = "assets/maps/";
+const ICON_FOLDER = "assets/"; // assets/{nation}/regX.png
+
+const PLACEHOLDER_SVG = 'data:image/svg+xml;utf8,' + encodeURIComponent(
+  `<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128">
+     <rect width="100%" height="100%" fill="#444"/>
+     <text x="50%" y="54%" font-size="18" fill="#fff" text-anchor="middle" font-family="Arial">no</text>
+     <text x="50%" y="70%" font-size="12" fill="#ddd" text-anchor="middle" font-family="Arial">image</text>
+   </svg>`);
+
+// === Иконки в папке assets/symbols ===
+const ICON_NAMES = [
+  'symb1','symb2','symb3','symb4','symb5','symb6',
+  'symb7','symb8','symb9','symb10','symb11','symb12',
+  'symb13','symb14','symb15','symb16','symb17','symb18',
+  'symb19','symb20','symb21','symb22','symb23','symb24','symb25','symb26',
+  'symb27','symb28','symb29','symb30','symb31','symb32','symb33','symb34',
+  'symb35'
+];
+
+const ICON_CATEGORIES = {
+  unit: ['symb1','symb2','symb3','symb4','symb5','symb6',
+         'symb7','symb8','symb9','symb10','symb11','symb12',
+         'symb13','symb14','symb15','symb16','symb17','symb18'],
+  engineer: ['symb19','symb20','symb21','symb22','symb23','symb24','symb25','symb26',
+             'symb27','symb28','symb29'],
+  signs: ['symb31','symb32','symb33','symb34','symb35']
+};
+
+const ICON_LABELS = {
+  symb1:  'Бронеавтомобиль',
+  symb2:  'Гаубица',
+  symb3:  'Противотанковая пушка',
+  symb4:  'Противовоздушная оборона',
+  symb5:  'Основная пехота',
+  symb6:  'Тяжелая пехота',
+  symb7:  'Специальная пехота',
+  symb8:  'Вспомогательная пехота',
+  symb9:  'Подразделение поддержки',
+  symb10: 'Тяжелый танк',
+  symb11: 'Противотанковая САУ',
+  symb12: 'Легкий танк',
+  symb13: 'Средний танк',
+  symb14: 'Штурмовая САУ',
+  symb15: 'Самостоятельный пехотный отряд',
+  symb16: 'Парашютисты',
+  symb17: 'Фронтовая авиация',
+  symb18: 'Вспомогательная техника'
+};
+
+const ICON_SHORT = {
+  symb1:  'Бронеавто',
+  symb2:  'Гаубица',
+  symb3:  'ПТ пушка',
+  symb4:  'ПВО',
+  symb5:  'Пехота',
+  symb6:  'Тяж. пех.',
+  symb7:  'Спецпех.',
+  symb8:  'Всп. пех.',
+  symb9:  'Поддержка',
+  symb10: 'Тяж. танк',
+  symb11: 'ПТ САУ',
+  symb12: 'Лёг. танк',
+  symb13: 'Сред. танк',
+  symb14: 'Штурм. САУ',
+  symb15: 'Пех. отряд',
+  symb16: 'Десант',
+  symb17: 'Авиация',
+  symb18: 'Всп. тех.'
+};
+
+const MAP_NAMES = {
+  1: "Airfield",
+  2: "Bazerville",
+  3: "Borovaya River",
+  4: "Carpathians",
+  5: "Champagne",
+  6: "Coast",
+  7: "Dead River",
+  8: "Estate",
+  9: "Farm Land",
+ 10: "Hunting Grounds",
+ 11: "Kursk Fields",
+ 12: "Nameless Height",
+ 13: "Polesie",
+ 14: "Port",
+ 15: "Saint Lo",
+ 16: "Suburb",
+ 17: "Valley of Death",
+ 18: "Village",
+ 19: "Volokalamsk Highway",
+ 20: "Witches Vale",
+ 21: "Winter March",
+ 22: "Chepel",
+ 23: "Crossroads",
+ 24: "Sandy Path",
+ 25: "Marl"
+};
+
+const REG_NAMES = {
+  germany: {
+    1: "Самоходный",
+    2: "Развед",
+    3: "Механка",
+    4: "Гаубицы",
+    5: "Моторизованная пехота",
+    6: "Огнеметный",
+    7: "ПВО",
+    8: "Саперка",
+    9: "Гренадерский",
+    10: "Минометный",
+    11: "Штурмовой",
+    12: "Тяжелый танковый",
+    13: "Противотанковый",
+    14: "Средний танковый",
+    15: "Первый артиллерийский",
+    16: "Первый пехотный",
+    17: "Первый танковый"
+  },
+  usa: {
+    1: "Самоходный",
+    2: "Развед",
+    3: "Механка",
+    4: "Гаубицы",
+    5: "Моторизованная пехота",
+    6: "Огнеметный",
+    7: "ПВО",
+    8: "Десантный",
+    9: "Тяжелый танковый",
+    10: "Минометный",
+    11: "Саперный",
+    12: "Средний танковый",
+    13: "Противотанковый",
+    14: "Штурмовой",
+    15: "Первый артиллерийский",
+    16: "Первый пехотный",
+    17: "Первый танковый"
+  },
+  ussr: {
+    1: "Самоходный",
+    2: "Развед",
+    3: "Механка",
+    4: "Гаубицы",
+    5: "Моторизованная пехота",
+    6: "Огнеметный",
+    7: "ПВО",
+    8: "Саперка",
+    9: "Тяжелый танковый",
+    10: "Минометный",
+    11: "Штурмовой",
+    12: "Средний танковый",
+    13: "Противотанковый",
+    14: "88-ой штурмовой",
+    15: "Первый артиллерийский",
+    16: "Первый пехотный",
+    17: "Первый танковый"
   }
+};
 
-  function updateRoomPanelCurrentTurn() {
-    const info = document.getElementById('mow2_panel_room_info');
-    if (!info) return;
-    const turn = currentRoom && currentRoom.current_turn_user_id ? currentRoom.current_turn_user_id : null;
-    const youAre = auth.currentUser && auth.currentUser.id === currentRoom.owner_user_id ? ' (Создатель)' : '';
-    if (!turn) {
-      info.innerHTML = `Создателем: ${escapeHtml(currentRoom.owner_user_id ? currentRoom.owner_user_id : '')}${youAre}`;
-    } else {
-      // get username resolved asynchronously
-      (async () => {
-        try {
-          const { data } = await supabaseClient.from('users_mow2').select('username').eq('id', turn).limit(1).single();
-          const uname = data && data.username ? data.username : '—';
-          info.innerHTML = `Сейчас ход: <b>${escapeHtml(uname)}</b>`;
-        } catch (e) {
-          info.innerHTML = `Сейчас ход: <b>${turn}</b>`;
+//------------ Полезные утилиты ------------
+function $id(id){ return document.getElementById(id); }
+function createEl(tag, cls){ const e = document.createElement(tag); if(cls) e.className = cls; return e; }
+function escapeHtml(s){ return String(s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]); }
+
+//--------------------Исправление рисунков в эшелонах
+function pickLayerOptions(layer) {
+  const opts = {};
+  if (layer.options) {
+    if (layer.options.color) opts.color = layer.options.color;
+    if (layer.options.weight != null) opts.weight = layer.options.weight;
+    if (layer.options.fillColor) opts.fillColor = layer.options.fillColor;
+    if (layer.options.fillOpacity != null) opts.fillOpacity = layer.options.fillOpacity;
+  }
+  return opts;
+}
+
+//------------ Инициализация карты и слоёв ------------
+let imageOverlay = null;
+let imageBounds = null;
+let currentMapFile = null;
+
+const map = L.map('map', {
+  crs: L.CRS.Simple,
+  minZoom: -1,
+  maxZoom: 4,
+  zoomSnap: 0.25,
+  zoomDelta: 0.5,
+});
+map.setView([0,0], 0);
+
+const drawnItems = new L.FeatureGroup();
+map.addLayer(drawnItems);
+
+// ------------ Эшелоны (3 состояния карты) ------------
+const ECHELON_COUNT = 3;
+let currentEchelon = 1;
+let echelonStates = {
+  1: { markers: [], simple: [], drawings: [] },
+  2: { markers: [], simple: [], drawings: [] },
+  3: { markers: [], simple: [], drawings: [] }
+};
+
+// Контейнеры для маркеров/символов
+let markerList = []; // {id, team, playerIndex, nick, nation, regimentFile, marker}
+let simpleMarkers = []; // symbols from SimpleSymbols or others
+
+// ------------ Draw control: цвет/толщина остаются ------------
+function getDrawColor(){ return $id('drawColor') ? $id('drawColor').value : '#ff0000'; }
+function getDrawWeight(){ return $id('drawWeight') ? Number($id('drawWeight').value) : 3; }
+
+const drawControl = new L.Control.Draw({
+  position: 'topleft',
+  draw: {
+    marker: false,
+    polyline: true,
+    polygon: true,
+    rectangle: false,
+    circle: false,
+    circlemarker: false
+  },
+  edit: { featureGroup: drawnItems, remove: true }
+});
+map.addControl(drawControl);
+
+map.on(L.Draw.Event.CREATED, function (e) {
+  const layer = e.layer;
+  if (layer.setStyle) {
+    const style = { color: getDrawColor(), weight: getDrawWeight() };
+    if (layer instanceof L.Polygon) {
+      style.fillColor = getDrawColor();
+      style.fillOpacity = 0.15;
+    }
+    layer.setStyle(style);
+  }
+  if (layer instanceof L.Circle) {
+    layer.setStyle && layer.setStyle({ color: getDrawColor(), weight: getDrawWeight() });
+  }
+  drawnItems.addLayer(layer);
+});
+
+map.on(L.Draw.Event.EDITED, function (e) {});
+map.on(L.Draw.Event.DELETED, function (e) {});
+
+// === SimpleSymbols контроль ===
+const SimpleSymbols = L.Control.extend({
+  onAdd: function(map) {
+    const container = L.DomUtil.create('div', 'leaflet-bar leaflet-control');
+    container.style.background = 'rgba(20,20,20,0.6)';
+    container.style.border = '1px solid rgba(255,255,255,0.15)';
+    container.style.cursor = 'pointer';
+    container.style.padding = '4px';
+
+    const tabs = L.DomUtil.create('div', '', container);
+    tabs.style.display = 'flex';
+    tabs.style.justifyContent = 'space-between';
+    tabs.style.marginBottom = '4px';
+
+    const tabNames = { unit: 'Арм', engineer: 'Инж', signs: 'Сим' };
+    const menus = {};
+
+    for (const key in tabNames) {
+      const btn = L.DomUtil.create('a', '', tabs);
+      btn.textContent = tabNames[key];
+      btn.style.flex = '1';
+      btn.style.textAlign = 'center';
+      btn.style.padding = '2px 0';
+      btn.style.cursor = 'pointer';
+      btn.style.background = 'rgba(40,40,40,0.6)';
+      btn.style.color = 'white';
+      btn.style.border = '1px solid rgba(255,255,255,0.1)';
+      btn.style.userSelect = 'none';
+
+      const menu = L.DomUtil.create('div', '', container);
+      menu.style.display = 'none';
+      menu.classList.add('symbol-menu');
+      menu.style.marginTop = '2px';
+      menu.style.background = 'rgba(0,0,0,0.7)';
+      menu.style.border = '1px solid rgba(255,255,255,0.1)';
+      menu.style.borderRadius = '6px';
+      menu.style.padding = '4px';
+      menu.style.width = '80px';
+      menu.style.gridTemplateColumns = 'repeat(2, 34px)';
+      menu.style.gridAutoRows = '34px';
+      menu.style.gridGap = '4px';
+      menu.style.overflow = 'hidden';
+      menu.style.display = 'none';
+
+      menus[key] = menu;
+
+      L.DomEvent.on(btn, 'click', () => {
+        for (const k in menus) {
+          if (k === key) {
+            menus[k].style.display = menus[k].style.display === 'none' ? 'grid' : 'none';
+          } else {
+            menus[k].style.display = 'none';
+          }
         }
-      })();
+      });
     }
+
+    for (const category in ICON_CATEGORIES) {
+      const menu = menus[category];
+      menu.style.display = 'none';
+      ICON_CATEGORIES[category].forEach(name => {
+        const btn = L.DomUtil.create('a', '', menu);
+        btn.style.width = '34px';
+        btn.style.height = '34px';
+        btn.style.margin = '0';
+        btn.style.textAlign = 'center';
+        btn.style.verticalAlign = 'middle';
+        btn.innerHTML = `<img src="assets/symbols/${name}.png" 
+                          alt="${name}" 
+                          title="${ICON_LABELS[name] || name}" 
+                          style="width:28px;height:28px;pointer-events:none">`;
+
+        L.DomEvent.on(btn, 'click', e => {
+          L.DomEvent.stopPropagation(e);
+          L.DomEvent.preventDefault(e);
+          const mk = addCustomIcon(`assets/symbols/${name}.png`, map.getCenter());
+          if (mk) mk._symbName = name;
+          simpleMarkers.push(mk);
+          // integrate with supabase if in room (see Part 3)
+          if (typeof onLocalMarkerCreated === 'function') {
+            onLocalMarkerCreated(mk);
+          }
+        });
+      });
+    }
+
+    return container;
+  }
+});
+
+map.addControl(new SimpleSymbols({ position: 'topleft' }));
+
+function addSimpleSymbol(type, latlng) {
+  const color = getDrawColor();
+  const size = 60;
+  let char = '?';
+  switch(type){
+    case 'dot': char='●'; break;
+    case 'x': char='✖'; break;
+    case 'arrow': char='↑'; break;
+    case 'triangle': char='▲'; break;
+    case 'diamond': char='◆'; break;
+    case 'skull': char='☠'; break;
+    case 'cross': char='☧'; break;
   }
 
-  function renderMembersInPanel(members) {
-    const container = document.getElementById('mow2_panel_players');
-    if (!container) return;
-    container.innerHTML = '';
-    members.forEach(m => {
-      const div = document.createElement('div');
-      div.style.display = 'flex';
-      div.style.justifyContent = 'space-between';
-      div.style.alignItems = 'center';
-      div.style.background = '#151515';
-      div.style.padding = '6px';
-      div.style.borderRadius = '6px';
-      div.innerHTML = `<div style="font-size:13px">${escapeHtml(m.users_mow2 ? m.users_mow2.username : m.user_id)}${m.is_owner ? ' (создатель)' : ''}</div>
-        <div style="display:flex;gap:6px">
-          ${auth.currentUser.id === currentRoom.owner_user_id ? `<button class="mow2_kick_btn" data-user="${m.user_id}">Кик</button>` : ''}
-        </div>`;
-      container.appendChild(div);
-    });
+  const marker = L.marker(latlng, {
+    icon: L.divIcon({
+      html: `<div style="color:${color};font-size:${size}px;">${char}</div>`,
+      className: 'symbol-marker',
+      iconSize: [size,size],
+      iconAnchor: [size/2,size/2]
+    }),
+    draggable: true
+  }).addTo(map);
 
-    container.querySelectorAll('.mow2_kick_btn').forEach(btn => {
-      btn.onclick = async () => {
-        const uid = btn.getAttribute('data-user');
-        if (!confirm('Выгнать игрока?')) return;
-        // owner only
-        if (auth.currentUser.id !== currentRoom.owner_user_id) { showToast('Только создатель может кикать'); return; }
-        await supabaseClient.from('room_members').delete().eq('room_id', currentRoom.id).eq('user_id', uid);
-        showToast('Игрок выгнан');
-        loadRoomMembers(currentRoom.id);
-      };
-    });
-  }
+  marker._simpleType = type;
 
-  // -------------------- INIT (load user and show appropriate screen) ------
-  async function init() {
-    // attach handlers for existing toolbar buttons in original HTML
-    attachOriginalToolbarHandlers();
-
-    // Load user from localStorage
-    const u = auth.loadFromStorage();
-    if (!u) {
-      showAuthScreen();
-    } else {
-      auth.currentUser = u;
-      showRoomsScreen();
-    }
-  }
-
-  function attachOriginalToolbarHandlers() {
-    // Hook up original save/load/clear buttons to new permission model
-    const btnClearAll = document.getElementById('btnClearAll');
-    if (btnClearAll) {
-      btnClearAll.onclick = async () => {
-        if (!currentRoom) { showToast('Не в комнате'); return; }
-        if (auth.currentUser.id !== currentRoom.owner_user_id) { showToast('Только создатель может очищать карту'); return; }
-        if (!confirm('Очистить карту?')) return;
-        await clearAllMarkersInRoom();
-      };
-    }
-
-    const btnSaveImage = document.getElementById('btnSaveImage');
-    if (btnSaveImage) {
-      btnSaveImage.onclick = () => {
-        // keep original behavior: html2canvas capture
-        try {
-          html2canvas(document.getElementById('map'), { useCORS: true }).then(canvas => {
-            const link = document.createElement('a');
-            link.download = `mow2_map_${Date.now()}.jpg`;
-            link.href = canvas.toDataURL('image/jpeg', 0.92);
-            link.click();
-          });
-        } catch (e) {
-          showToast('Ошибка сохранения изображения');
-        }
-      };
-    }
-
-    const btnAssault = document.getElementById('btnAssault');
-    if (btnAssault) {
-      // Per TЗ: button "Наступление противника" may be removed. Hide it.
-      btnAssault.style.display = 'none';
-    }
-
-    // Example: provide a hook to create markers from original UI (if original had createSymb button)
-    // /* INTEGRATE WITH ORIGINAL: find original handlers like createSymbol(symbName) and replace with call to createMarker(symbName,x,y, rotation, meta) */
-  }
-
-  // -------------------- ONLOAD --------------------
-  window.addEventListener('load', () => {
-    try {
-      init();
-    } catch (e) {
-      console.error('init error', e);
-      showToast('Ошибка инициализации');
+  marker.on('click', () => {
+    if(confirm('Удалить этот символ?')){
+      map.removeLayer(marker);
+      const idx = simpleMarkers.indexOf(marker);
+      if(idx!==-1) simpleMarkers.splice(idx,1);
     }
   });
 
-  // Expose a few functions to global for debugging / integration with original UI
-  window.MOW2 = {
-    createMarker,
-    bulkCreateMarkers,
-    commitMarkerMove,
-    enterRoom,
-    leaveRoom,
-    auth
-  };
+  // integration hook
+  if (typeof onLocalMarkerCreated === 'function') onLocalMarkerCreated(marker);
 
-})();
+  return marker;
+}
+
+function addCustomIcon(url, latlng) {
+  const marker = L.marker(latlng, {
+    icon: L.icon({
+      iconUrl: url,
+      iconSize: [48, 48],
+      iconAnchor: [24, 24]
+    }),
+    draggable: true
+  }).addTo(map);
+
+  try {
+    const file = String(url).split('/').pop() || '';
+    const key = file.replace(/\.[^/.]+$/, '');
+    marker._symbName = key;
+
+    if(ICON_LABELS[key]){
+      const label = ICON_SHORT[key] || ICON_LABELS[key];
+      marker.bindTooltip(label, {
+        permanent: false,
+        direction: "top",
+        offset: [0, -26],
+        opacity: 0.95,
+        className: 'symb-tooltip'
+      });
+    }
+  } catch (e) { console.warn('tooltip bind error', e); }
+
+  marker.on('click', () => {
+    if (confirm('Удалить этот символ?')) {
+      map.removeLayer(marker);
+      const idx = simpleMarkers.indexOf(marker);
+      if (idx !== -1) simpleMarkers.splice(idx, 1);
+    }
+  });
+
+  // integration hook
+  if (typeof onLocalMarkerCreated === 'function') onLocalMarkerCreated(marker);
+
+  return marker;
+}
+
+//------------ Заполнение списка карт автоматически ------------
+const mapSelect = $id('mapSelect');
+for (let i = 1; i <= MAP_COUNT; i++) {
+  const baseName = MAP_NAMES[i] || `map${i}`;
+  const optA = createEl('option');
+  optA.value = `${MAP_FILE_PREFIX}${i}.jpg`;
+  optA.textContent = `${i}. ${baseName}-a`;
+  mapSelect.appendChild(optA);
+  const optB = createEl('option');
+  optB.value = `${MAP_FILE_PREFIX}${i}-alt.jpg`;
+  optB.textContent = `${i}. ${baseName}-b`;
+  mapSelect.appendChild(optB);
+}
+
+//------------ Загрузка карты (imageOverlay) ------------
+function loadMapByFile(fileName){
+  return new Promise((resolve, reject) => {
+    if(imageOverlay) {
+      try { map.removeLayer(imageOverlay); } catch(e){}
+      imageOverlay = null; imageBounds = null; currentMapFile = null;
+    }
+    const url = MAP_FOLDER + fileName;
+    const img = new Image();
+    img.onload = function(){
+      const w = img.naturalWidth;
+      const h = img.naturalHeight;
+      imageBounds = [[0,0],[h,w]];
+      imageOverlay = L.imageOverlay(url, imageBounds).addTo(map);
+      if (imageOverlay && typeof imageOverlay.bringToBack === 'function') imageOverlay.bringToBack();
+      map.fitBounds(imageBounds);
+      currentMapFile = fileName;
+      resolve();
+    };
+    img.onerror = function(){ reject(new Error('Не удалось загрузить файл карты: ' + url)); };
+    img.src = url;
+  });
+}
+
+$id('btnLoadMap').addEventListener('click', ()=> {
+  const sel = mapSelect.value;
+  if(!sel) return alert('Выберите карту в списке.');
+  loadMapByFile(sel).catch(err => alert(err.message));
+});
+
+$id('btnResetMap').addEventListener('click', ()=>{
+  if(imageOverlay) map.removeLayer(imageOverlay);
+  imageOverlay = null; imageBounds = null; currentMapFile = null;
+  map.setView([0,0], 0);
+});
+
+//------------ UI игроков (2 команды по 5) ------------
+const RED_PLAYERS = $id('redPlayers');
+const BLUE_PLAYERS = $id('bluePlayers');
+const NATIONS = ['ussr','germany','usa'];
+
+function makePlayerRow(team, index){
+  const row = createEl('div','player-row');
+  const nickId = `${team}-nick-${index}`;
+  const nationId = `${team}-nation-${index}`;
+  const regId = `${team}-reg-${index}`;
+  row.innerHTML = `
+    <input id="${nickId}" type="text" placeholder="Ник" />
+    <select id="${nationId}" class="nation-select"></select>
+    <select id="${regId}" class="reg-select"></select>
+    <button id="${team}-place-${index}">Поставить</button>
+  `;
+  const nationSel = row.querySelector(`#${nationId}`);
+  NATIONS.forEach(n => {
+    const o = createEl('option'); o.value = n; o.textContent = n.toUpperCase(); nationSel.appendChild(o);
+  });
+  const regSel = row.querySelector(`#${regId}`);
+  function fillRegOptions(nation){
+    regSel.innerHTML = '';
+    const regs = REG_NAMES[nation] || {};
+    for(let i=1;i<=17;i++){
+      const opt = createEl('option');
+      opt.value = `reg${i}.png`;
+      opt.textContent = (regs[i] || `Полк ${i}`);
+      regSel.appendChild(opt);
+    }
+  }
+  fillRegOptions(nationSel.value);
+  nationSel.addEventListener('change', ()=> fillRegOptions(nationSel.value));
+  const btn = row.querySelector(`#${team}-place-${index}`);
+  btn.addEventListener('click', ()=> {
+    const nick = (row.querySelector(`#${nickId}`).value || `Игрок ${index}`);
+    const nation = row.querySelector(`#${nationId}`).value;
+    const regiment = row.querySelector(`#${regId}`).value;
+    placeMarker(nick, nation, regiment, team, index-1);
+  });
+  return row;
+}
+
+for(let i=1;i<=5;i++){
+  RED_PLAYERS.appendChild(makePlayerRow('red', i));
+  BLUE_PLAYERS.appendChild(makePlayerRow('blue', i));
+}
+
+//------------ Управление маркерами ------------
+function generateMarkerId(team, idx){ return `${team}-${idx}`; }
+
+function createRegDivIcon(nick, nation, regimentFile, team) {
+  const iconUrl = `${ICON_FOLDER}${nation}/${regimentFile}`;
+  const size = 56;
+  const teamClass = team === 'blue' ? 'blue-marker' : team === 'red' ? 'red-marker' : '';
+  const html = `
+    <div class="mw2-reg ${teamClass}">
+      <img src="${iconUrl}" 
+           onerror="this.src='${PLACEHOLDER_SVG}'; this.style.width='56px'; this.style.height='56px'"
+           style="width:${size}px;height:${size}px;object-fit:contain;" />
+      <div class="mw2-label">${escapeHtml(nick)}</div>
+    </div>`;
+  return L.divIcon({
+    html,
+    className: '',
+    iconSize: [size, size + 18],
+    iconAnchor: [Math.round(size / 2), Math.round(size / 2)],
+  });
+}
+function placeMarker(nick, nation, regimentFile, team, playerIndex){
+  const id = generateMarkerId(team, playerIndex);
+  const existingIndex = markerList.findIndex(m => m.id === id);
+  if (existingIndex !== -1) {
+    try { map.removeLayer(markerList[existingIndex].marker); } catch(e){}
+    markerList.splice(existingIndex, 1);
+  }
+  const pos = map.getCenter();
+  const icon = createRegDivIcon(nick, nation, regimentFile, team);
+  const marker = L.marker(pos, { icon, draggable: true }).addTo(map);
+  marker.on('dragend', ()=> {
+    // hook to sync position (Part 3 will attach handler)
+    if (typeof onLocalMarkerMoved === 'function') onLocalMarkerMoved(marker);
+  });
+  const entry = { id, team, playerIndex, nick, nation, regimentFile, marker };
+  markerList.push(entry);
+  // create in db if in room (Part 3 hook)
+  if (typeof onLocalMarkerCreated === 'function') onLocalMarkerCreated(entry);
+}
+
+//------------ Кнопки готовых символов ------------
+$id('btnFront').addEventListener('click', ()=>{
+  if(!imageBounds) return alert('Загрузите карту перед добавлением символов (кнопка "Загрузить карту").');
+  const b = imageBounds;
+  const y = (b[0][0] + b[1][0]) / 2;
+  const left = [y, b[0][1]];
+  const right = [y, b[1][1]];
+  const color = getDrawColor();
+  const weight = getDrawWeight();
+  const line = L.polyline([left, right], { color, weight }).addTo(drawnItems);
+});
+
+//-------------Сохранение и загрузка состояния эшелона----------
+function saveCurrentEchelonState() {
+  echelonStates[currentEchelon] = {
+    markers: markerList.map(m => ({
+      id: m.id,
+      team: m.team,
+      playerIndex: m.playerIndex,
+      nick: m.nick,
+      nation: m.nation,
+      regimentFile: m.regimentFile,
+      latlng: m.marker.getLatLng()
+    })),
+    simple: simpleMarkers.map(m => {
+      const latlng = m.getLatLng ? m.getLatLng() : {lat:0,lng:0};
+      const type = m._symbName || m._simpleType || null;
+      const html = m.getElement ? m.getElement().innerHTML : '';
+      return { latlng, type, html };
+    }),
+    drawings: (() => {
+      const drawings = [];
+      drawnItems.eachLayer(layer=>{
+        try{
+          if(layer instanceof L.Polyline && !(layer instanceof L.Polygon)){
+            drawings.push({type:'polyline', latlngs: layer.getLatLngs().map(p=>({lat:p.lat,lng:p.lng})), options: pickLayerOptions(layer)});
+          } else if(layer instanceof L.Polygon){
+            const rings = layer.getLatLngs();
+            const latlngs = Array.isArray(rings[0]) ? rings[0].map(p=>({lat:p.lat,lng:p.lng})) : rings.map(p=>({lat:p.lat,lng:p.lng}));
+            drawings.push({type:'polygon', latlngs, options: pickLayerOptions(layer)});
+          } else if(layer instanceof L.Circle){
+            drawings.push({type:'circle', center: layer.getLatLng(), radius: layer.getRadius(), options: pickLayerOptions(layer)});
+          }
+        } catch(e){console.warn('serialize drawing error', e);}
+      });
+      return drawings;
+    })()
+  };
+}
+
+function loadEchelonState(echelon) {
+  if(!echelonStates[echelon]) return;
+  const state = echelonStates[echelon];
+  drawnItems.clearLayers();
+  markerList.forEach(m => { try { map.removeLayer(m.marker); } catch(e){} });
+  markerList = [];
+  simpleMarkers.forEach(m => { try { map.removeLayer(m); } catch(e){} });
+  simpleMarkers = [];
+  (state.markers||[]).forEach(m=>{
+    const pos = m.latlng || {lat:0,lng:0};
+    const marker = L.marker([pos.lat,pos.lng], { icon:createRegDivIcon(m.nick,m.nation,m.regimentFile,m.team), draggable:true }).addTo(map);
+    marker.on('dragend', ()=> { if (typeof onLocalMarkerMoved === 'function') onLocalMarkerMoved(marker); });
+    markerList.push({...m, marker});
+  });
+  (state.simple||[]).forEach(s=>{
+    const latlng = s.latlng || {lat:0,lng:0};
+    let marker;
+    if(s.type && ICON_NAMES.includes(s.type)){
+      marker = addCustomIcon(`assets/symbols/${s.type}.png`, latlng);
+      marker._symbName = s.type;
+    } else {
+      marker = L.marker([latlng.lat, latlng.lng], {
+        icon: L.divIcon({ html: s.html || '', className: 'symbol-marker' }),
+        draggable: true
+      }).addTo(map);
+    }
+    simpleMarkers.push(marker);
+  });
+  (state.drawings||[]).forEach(d=>{
+    try{
+      if(d.type==='polyline') L.polyline(d.latlngs.map(p=>[p.lat,p.lng]), d.options||{}).addTo(drawnItems);
+      else if(d.type==='polygon') L.polygon(d.latlngs.map(p=>[p.lat,p.lng]), d.options||{}).addTo(drawnItems);
+      else if(d.type==='circle') L.circle([d.center.lat,d.center.lng], { radius:d.radius, ...(d.options||{}) }).addTo(drawnItems);
+    } catch(e){console.warn('Ошибка восстановления рисунка:',e);}
+  });
+}
+
+//------------ Ластик и очистка ------------
+$id('btnEraser').addEventListener('click', ()=>{
+  if(!confirm('Удалить ВСЕ рисунки на карте?')) return;
+  drawnItems.clearLayers();
+});
+
+$id('btnClearAll').addEventListener('click', ()=>{
+  if(!confirm('Очистить карту полностью? (иконки и рисунки)')) return;
+  markerList.forEach(m => { try { map.removeLayer(m.marker); } catch(e){} });
+  markerList = [];
+  simpleMarkers.forEach(m => { try { map.removeLayer(m); } catch(e){} });
+  simpleMarkers = [];
+  drawnItems.clearLayers();
+});
+
+//------------ Полоса толщины ------------
+$id('drawWeight').addEventListener('input', (e)=>{
+  $id('weightVal').textContent = e.target.value;
+});
+
+// ------------ Сохранение плана в JSON ------------
+$id('btnSave').addEventListener('click', () => {
+  if (!currentMapFile && !confirm('Карта не загружена. Сохранить план без карты?')) return;
+  saveCurrentEchelonState();
+  const plan = {
+    meta: { createdAt: new Date().toISOString(), mapFile: currentMapFile || null, echelonCount: ECHELON_COUNT },
+    echelons: {},
+    mapState: { center: map.getCenter(), zoom: map.getZoom() }
+  };
+  for (let e = 1; e <= ECHELON_COUNT; e++) {
+    const state = echelonStates[e];
+    if (!state) continue;
+    plan.echelons[e] = { markers: state.markers || [], simple: state.simple || [], drawings: state.drawings || [] };
+  }
+  const blob = new Blob([JSON.stringify(plan, null, 2)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = (currentMapFile || 'plan').replace(/\.[^/.]+$/, '') + '_plan.json';
+  a.click();
+  URL.revokeObjectURL(a.href);
+});
+
+// ------------ Загрузка плана из JSON ------------
+function loadPlanData(plan) {
+  if (!plan) return;
+  const mapFile = plan.meta?.mapFile || 'map1.jpg';
+  if (mapSelect) mapSelect.value = mapFile;
+  loadMapByFile(mapFile).then(() => {
+    if (plan.echelons) {
+      for (let e = 1; e <= (plan.meta?.echelonCount || 3); e++) {
+        const state = plan.echelons[e];
+        if (!state) continue;
+        echelonStates[e] = {
+          markers: (state.markers || []).map(m => ({ ...m, marker: null })),
+          simple: state.simple || [],
+          drawings: state.drawings || []
+        };
+      }
+      currentEchelon = 1;
+      loadEchelonState(currentEchelon);
+    } else {
+      echelonStates = {
+        1: { markers: plan.markers || [], simple: plan.simple || [], drawings: plan.drawings || [] },
+        2: { markers: [], simple: [], drawings: [] },
+        3: { markers: [], simple: [], drawings: [] }
+      };
+      currentEchelon = 1;
+      loadEchelonState(1);
+    }
+    if (plan.mapState && plan.mapState.center && plan.mapState.zoom) map.setView(plan.mapState.center, plan.mapState.zoom);
+    alert('✅ План успешно загружен!');
+  }).catch(err => {
+    console.error('Ошибка при загрузке карты:', err);
+    alert('Ошибка при загрузке карты/плана: ' + (err.message || err));
+  });
+}
+
+document.getElementById("loadPlan").addEventListener("click", () => {
+  const input = document.getElementById("planFileInput");
+  input.value = null;
+  input.click();
+});
+
+document.getElementById("planFileInput").addEventListener("change", function(e) {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = (ev) => {
+    try {
+      const data = JSON.parse(ev.target.result);
+      loadPlanData(data);
+    } catch(err) {
+      console.error(err);
+      alert("Ошибка при загрузке файла плана!");
+    } finally {
+      e.target.value = null;
+    }
+  };
+  reader.readAsText(file);
+});
+
+map.attributionControl.setPrefix(false);
+map.attributionControl.addAttribution('');
+
+$id('btnFillLower').addEventListener('click', () => {
+  if (!imageBounds) return alert('Сначала загрузите карту.');
+  const color = getDrawColor();
+  const top = imageBounds[0][0];
+  const bottom = imageBounds[1][0];
+  const left = imageBounds[0][1];
+  const right = imageBounds[1][1];
+  const midY = (top + bottom) / 2;
+  L.polygon([
+    [midY, left],
+    [midY, right],
+    [bottom, right],
+    [bottom, left]
+  ], {
+    color: color,
+    weight: 2,
+    fillColor: color,
+    fillOpacity: 0.10
+  }).addTo(drawnItems);
+});
+
+// ---------- Наступление (DEACTIVATED) ----------
+// В ТЗ разрешено удалить механику "наступление противника". Отключаю кнопку.
+// Функция сохраняется, но кнопка вызова отключена.
+let assaultTimer = null;
+function toggleAssault() {
+  // intentionally disabled in multiplayer edition
+  showToast('Механика наступления отключена для многопользовательского режима (по ТЗ).');
+}
+if ($id('btnAssault')) {
+  $id('btnAssault').removeEventListener && $id('btnAssault').removeEventListener('click', toggleAssault);
+  // не вешаем обработчик, чтобы кнопка визуально осталась, но не включала таймер
+}
+
+// ------------ Сохранение как изображение ------------
+function saveMapAsScreenshot() {
+  if (!imageOverlay) return alert("Карта не загружена — нечего сохранять!");
+  const mapContainer = document.getElementById('map');
+  const tooltips = mapContainer.querySelectorAll('.leaflet-tooltip');
+  tooltips.forEach(t => t.style.display = 'none');
+  html2canvas(mapContainer, {
+    backgroundColor: null,
+    useCORS: true,
+    allowTaint: true,
+    scale: 2
+  }).then(canvas => {
+    tooltips.forEach(t => t.style.display = '');
+    const link = document.createElement('a');
+    const fileName = currentMapFile ? currentMapFile.replace(/\.[^/.]+$/, '') + '_plan.png' : 'map_plan.png';
+    link.download = fileName;
+    link.href = canvas.toDataURL('image/png');
+    link.click();
+  }).catch(err => {
+    console.error("Ошибка при создании скриншота карты:", err);
+    alert("Не удалось сохранить карту как изображение.");
+  });
+}
+$id('btnSaveImage').addEventListener('click', saveMapAsScreenshot);
