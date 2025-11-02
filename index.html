@@ -11,13 +11,16 @@
 
   <link rel="stylesheet" href="style.css" />
   <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+
+  <!-- Supabase и bcrypt (загружаются в <head>, чтобы быть доступны в script.js) -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/bcryptjs@2.4.3/dist/bcrypt.min.js"></script>
 </head>
 <body>
   <!-- AUTH SCREEN -->
   <div id="auth-screen" style="display:none;"></div>
   <!-- ROOMS SCREEN -->
   <div id="rooms-screen" style="display:none;"></div>
-  <!-- GAME SCREEN (original content) -->
 
   <div class="app">
     <aside class="sidebar">
@@ -94,39 +97,20 @@
   <script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
 
-  <!-- Supabase и bcrypt (оба зеркала для надёжности) -->
-  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.3/dist/umd/supabase.min.js"></script>
-  <script src="https://unpkg.com/@supabase/supabase-js@2.45.3/dist/umd/supabase.min.js"></script>
-
-  <script src="https://cdn.jsdelivr.net/npm/bcryptjs@2.4.3/dist/bcrypt.min.js"></script>
-  <script src="https://unpkg.com/bcryptjs@2.4.3/dist/bcrypt.min.js"></script>
-
-  <!-- Основная инициализация -->
+  <!-- Инициализация Supabase -->
   <script>
-    document.addEventListener('DOMContentLoaded', () => {
-      if (typeof supabase === 'undefined') {
-        console.error('❌ Supabase не загрузился (CDN/CSP/блокировка)');
-        return;
-      }
-      if (typeof bcrypt === 'undefined' && !(window.dcodeIO && window.dcodeIO.bcrypt)) {
-        console.error('❌ bcrypt не загрузился');
-        return;
-      }
+    const SUPABASE_URL = 'https://zqklzhipwiifrrbyentg.supabase.co';
+    const SUPABASE_ANON_KEY =
+      'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inpxa2x6aGlwd2lpZnJyYnllbnRnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjA5NzQ0ODYsImV4cCI6MjA3NjU1MDQ4Nn0.siMc2xCvoBEjwNVwaOVvjlOtDODs9yDo0IDyGl9uWso';
 
-      const bcryptLib = window.bcrypt || (window.dcodeIO && window.dcodeIO.bcrypt);
-      window.bcrypt = bcryptLib; // унифицируем имя
+    // Создаем глобальный клиент один раз
+    const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+    window.supabaseClient = supabaseClient;
 
-      window.supabaseClient = supabase.createClient(
-        'https://zqklzhipwiifrrbyentg.supabase.co',
-        'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inpxa2x6aGlwd2lpZnJyYnllbnRnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjA5NzQ0ODYsImV4cCI6MjA3NjU1MDQ4Nn0.siMc2xCvoBEjwNVwaOVvjlOtDODs9yDo0IDyGl9uWso'
-      );
-
-      const s = document.createElement('script');
-      s.src = './script.js';
-      document.body.appendChild(s);
-
-      console.log('✅ Supabase и bcrypt готовы, script.js загружен');
-    });
+    console.log('✅ Supabase и bcrypt подключены');
   </script>
+
+  <!-- Основной скрипт -->
+  <script src="script.js"></script>
 </body>
 </html>
