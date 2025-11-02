@@ -1,35 +1,32 @@
 // Инициализация Supabase, авторизация, экраны входа и список комнат.
 // (Не трогаем визуал сайта — стили темно-серые сохраняются.)
 
-// Инициализация Supabase и bcrypt — ждём полной загрузки скриптов
-window.addEventListener('load', () => {
-  const SUPABASE_URL = 'https://zqklzhipwiifrrbyentg.supabase.co';
-  const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inpxa2x6aGlwd2lpZnJyYnllbnRnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjA5NzQ0ODYsImV4cCI6MjA3NjU1MDQ4Nn0.siMc2xCvoBEjwNVwaOVvjlOtDODs9yDo0IDyGl9uWso';
+// --- Supabase + bcrypt ИНИЦИАЛИЗАЦИЯ ---
+const SUPABASE_URL = 'https://zqklzhipwiifrrbyentg.supabase.co';
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inpxa2x6aGlwd2lpZnJyYnllbnRnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjA5NzQ0ODYsImV4cCI6MjA3NjU1MDQ4Nn0.siMc2xCvoBEjwNVwaOVvjlOtDODs9yDo0IDyGl9uWso';
 
-  // Проверяем подключение библиотек
+// гарантируем, что всё загружено
+document.addEventListener('DOMContentLoaded', () => {
   if (typeof supabase === 'undefined' || !supabase.createClient) {
-    console.error('❌ Supabase JS не найден — проверь <script src="...supabase.js">');
+    console.error('Supabase JS не найден — проверь подключение <script src="...supabase.js">');
     return;
   }
   if (typeof bcrypt === 'undefined') {
-    console.error('❌ bcryptjs не найден — проверь <script src="./bcrypt.min.js">');
+    console.error('bcryptjs не найден — проверь подключение <script src="...bcrypt.min.js">');
     return;
   }
 
-  // Создаём клиент Supabase
-  const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
-  console.log('✅ Supabase и bcryptjs загружены.');
+  // создаём клиент
+  window.supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  console.log('✅ Supabase и bcryptjs готовы');
 
-  // Делаем клиент глобальным для остального кода
-  window.supabaseClient = supabaseClient;
-
-  // Теперь запускаем основной код авторизации и интерфейса
-  initMoW2();
+  // теперь всё остальное может работать
+  startApp();
 });
 
-// Всё, что было ниже (Auth, UI, и т.д.), оборачиваем в функцию initMoW2()
-function initMoW2() {
-  // ----- сюда вставляется весь остальной код, начиная с определения функций $id, createEl, showToast и т.п. -----
+// перенеси всё, что ниже (Auth, UI, карта и т.д.) внутрь функции:
+function startApp() {
+  /* --- тут оставляй весь твой остальной код как есть --- */
 }
 
 // Вспомогательные утилиты (оставлены в том же стиле)
