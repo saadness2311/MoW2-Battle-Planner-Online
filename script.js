@@ -1,5 +1,4 @@
 // Инициализация Supabase, авторизация, экраны входа и список комнат.
-// (Не трогаем визуал сайта — стили темно-серые сохраняются.)
 
 /* --- Supabase и bcrypt --- */
 const supabaseClient = (typeof supabase !== 'undefined' && supabase.createClient)
@@ -8,23 +7,31 @@ const supabaseClient = (typeof supabase !== 'undefined' && supabase.createClient
       'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inpxa2x6aGlwd2lpZnJyYnllbnRnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjA5NzQ0ODYsImV4cCI6MjA3NjU1MDQ4Nn0.siMc2xCvoBEjwNVwaOVvjlOtDODs9yDo0IDyGl9uWso'
     )
   : null;
-// Вспомогательные утилиты (оставлены в том же стиле)
+
+// --- Вспомогательные утилиты ---
 function $id(id){ return document.getElementById(id); }
-function createEl(tag, cls){ const e = document.createElement(tag); if(cls) e.className = cls; return e; }
 function escapeHtml(s){ if(s==null) return ''; return String(s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]); }
-const nowIso = () => (new Date()).toISOString();
 const uuidv4 = () => (crypto && crypto.randomUUID) ? crypto.randomUUID() : ('id-'+Math.random().toString(36).slice(2,9));
 
-// лёгкий toast
+// --- Уведомление ---
 function showToast(msg, ttl=2500){
   let container = document.getElementById('mow2_toast_container');
   if(!container){
-    container = document.createElement('div'); container.id='mow2_toast_container';
-    Object.assign(container.style,{position:'fixed',right:'12px',bottom:'12px',zIndex:99999,display:'flex',flexDirection:'column',gap:'6px',alignItems:'flex-end',pointerEvents:'none'});
+    container = document.createElement('div');
+    container.id='mow2_toast_container';
+    Object.assign(container.style,{
+      position:'fixed',right:'12px',bottom:'12px',zIndex:99999,
+      display:'flex',flexDirection:'column',gap:'6px',alignItems:'flex-end',pointerEvents:'none'
+    });
     document.body.appendChild(container);
   }
-  const el = document.createElement('div'); el.textContent = msg;
-  Object.assign(el.style,{background:'#222',color:'#eee',padding:'8px 10px',borderRadius:'6px',fontSize:'13px',pointerEvents:'auto',boxShadow:'0 6px 18px rgba(0,0,0,0.6)'});
+  const el = document.createElement('div');
+  el.textContent = msg;
+  Object.assign(el.style,{
+    background:'#222',color:'#eee',padding:'8px 10px',
+    borderRadius:'6px',fontSize:'13px',pointerEvents:'auto',
+    boxShadow:'0 6px 18px rgba(0,0,0,0.6)'
+  });
   container.appendChild(el);
   setTimeout(()=>{ el.style.transition='opacity 300ms'; el.style.opacity=0; setTimeout(()=>el.remove(),300); }, ttl);
 }
@@ -35,9 +42,7 @@ const Auth = {
   async register(username, password){
     if(!supabaseClient) throw new Error('Supabase не доступен');
     if(!username) { showToast('Укажите ник'); return null; }
-    // проверка уникальности ника
-    const { data: existing, error: exErr } = await supabaseClient.from('users_mow2').select('id').eq('username', username).limit(1);
-    if (exErr){ console.error(exErr); showToast('Ошибка проверки ника'); return null; }
+    const { data: existing } = await supabaseClient.from('users_mow2').select('id').eq('username', username).limit(1);
     if (existing && existing.length>0){ showToast('Ник занят'); return null; }
     const hash = (typeof bcrypt !== 'undefined') ? bcrypt.hashSync(password || '', 10) : (password || '');
     const { data, error } = await supabaseClient.from('users_mow2').insert([{ username, password_hash: hash }]).select().single();
@@ -48,8 +53,7 @@ const Auth = {
     return this.currentUser;
   },
   async login(username, password){
-    if(!supabaseClient) throw new Error('Supabase не доступен');
-    const { data, error } = await supabaseClient.from('users_mow2').select('id,username,password_hash').eq('username', username).limit(1).single();
+    const { data, error } = await supabaseClient.from('users_mow2').select('id,username,password_hash').eq('username', username).single();
     if (error || !data){ showToast('Пользователь не найден'); return null; }
     const ok = (typeof bcrypt !== 'undefined') ? bcrypt.compareSync(password || '', data.password_hash) : (password === data.password_hash);
     if (!ok){ showToast('Неверный пароль'); return null; }
@@ -62,11 +66,13 @@ const Auth = {
     localStorage.removeItem('mow2_user'); this.currentUser = null; showAuthScreen();
   },
   loadFromStorage(){
-    try{ const raw = localStorage.getItem('mow2_user'); if(!raw) return null; this.currentUser = JSON.parse(raw); return this.currentUser; }catch(e){return null;}
+    try{ const raw = localStorage.getItem('mow2_user'); if(!raw) return null;
+      this.currentUser = JSON.parse(raw); return this.currentUser;
+    }catch(e){return null;}
   }
 };
 
-// --- CHANGES FOR AUTH/ROOMS: ensure containers + bind handlers immediately ---
+// --- Создание экранов ---
 function ensureAuthAndRoomsContainers(){
   if (!$id('mow2_auth_container')){
     const auth = document.createElement('div'); auth.id='mow2_auth_container';
@@ -83,8 +89,7 @@ function ensureAuthAndRoomsContainers(){
         <div style="margin-top:10px;display:flex;gap:8px">
           <button id="mow2_btn_guest" style="flex:1;padding:8px">Войти как гость</button>
         </div>
-      </div>
-    `;
+      </div>`;
     document.body.appendChild(auth);
   }
 
@@ -103,84 +108,32 @@ function ensureAuthAndRoomsContainers(){
           <button id="mow2_btn_create_room" style="padding:8px">Создать</button>
         </div>
         <div id="mow2_rooms_list" style="margin-top:12px;max-height:360px;overflow:auto"></div>
-      </div>
-    `;
+      </div>`;
     document.body.appendChild(rooms);
 
-    // bind create room
-    const createBtn = $id('mow2_btn_create_room');
-    if (createBtn) {
-      createBtn.addEventListener('click', async () => {
-        const name = $id('mow2_room_name').value.trim();
-        const pwd = $id('mow2_room_pwd').value || null;
+    // кнопка создания комнаты
+    $id('mow2_btn_create_room').onclick = async ()=>{
+      const name = $id('mow2_room_name').value.trim();
+      const pwd = $id('mow2_room_pwd').value || null;
+      if (!name) return alert('Введите название комнаты');
 
-        if (!name) {
-          alert('Введите название комнаты');
-          return;
-        }
+      const { data: owned } = await supabaseClient.from('rooms').select('id').eq('owner_user_id', Auth.currentUser.id);
+      if (owned && owned.length >= 4) return alert('Лимит: максимум 4 комнаты');
 
-        // Ограничение: максимум 4 комнаты на пользователя
-        try{
-          const { data: owned } = await supabaseClient
-            .from('rooms')
-            .select('id')
-            .eq('owner_user_id', Auth.currentUser.id);
+      const password_hash = pwd ? (typeof bcrypt!=='undefined'?bcrypt.hashSync(pwd,10):pwd) : null;
+      const { data, error } = await supabaseClient.from('rooms').insert([{
+        name, password_hash, owner_user_id: Auth.currentUser.id, current_echelon:1, max_players:50, settings:{}
+      }]).select().single();
+      if (error){ console.error(error); alert('Ошибка создания комнаты'); return; }
 
-          if (owned && owned.length >= 4) {
-            alert('Лимит: максимум 4 комнаты');
-            return;
-          }
-        }catch(err){
-          console.error('Ошибка при проверке количества комнат', err);
-        }
+      await supabaseClient.from('room_members').upsert(
+        [{ room_id:data.id, user_id:Auth.currentUser.id, is_owner:true }],
+        { onConflict:['room_id','user_id'] }
+      );
+      alert('Комната создана'); loadRoomsList();
+    };
 
-        // Хэш пароля (если есть)
-        const password_hash = pwd
-          ? (typeof bcrypt !== 'undefined' ? bcrypt.hashSync(pwd, 10) : pwd)
-          : null;
-
-        // Создаём комнату
-        try{
-          const { data, error } = await supabaseClient
-            .from('rooms')
-            .insert([{
-              name,
-              password_hash,
-              owner_user_id: Auth.currentUser.id,
-              current_echelon: 1,
-              max_players: 50,
-              settings: {}
-            }])
-            .select()
-            .single();
-
-          if (error) {
-            console.error(error);
-            alert('Ошибка создания комнаты');
-            return;
-          }
-
-          // Добавляем создателя в room_members
-          await supabaseClient.from('room_members').insert([{
-            room_id: data.id,
-            user_id: Auth.currentUser.id,
-            is_owner: true
-          }]);
-
-          alert('Комната создана');
-          loadRoomsList();
-        }catch(err){
-          console.error('Ошибка создания комнаты', err);
-          alert('Ошибка создания комнаты');
-        }
-      });
-    }
-
-    // bind logout (also re-bound in other places but safe)
-    const logoutBtn = $id('mow2_btn_logout');
-    if (logoutBtn) {
-      logoutBtn.addEventListener('click', ()=>{ Auth.logout(); });
-    }
+    $id('mow2_btn_logout').onclick = ()=>Auth.logout();
   }
 }
 
@@ -188,106 +141,103 @@ function showAuthScreen(){
   ensureAuthAndRoomsContainers();
   $id('mow2_auth_container').style.display='flex';
   $id('mow2_rooms_container').style.display='none';
-  // hide main map / app area to avoid user interacting until logged in
-  document.querySelectorAll('.app, #map').forEach(el=>{ if(el) el.style.pointerEvents='none'; });
+  document.querySelectorAll('.app,#map').forEach(el=>el.style.pointerEvents='none');
 }
 
-// --- NEW: show rooms screen ---
 function showRoomsScreen(){
   ensureAuthAndRoomsContainers();
   $id('mow2_auth_container').style.display='none';
   $id('mow2_rooms_container').style.display='flex';
-  // enable map / app interactions
-  document.querySelectorAll('.app, #map').forEach(el=>{ if(el) el.style.pointerEvents='auto'; });
-  // user label
+  document.querySelectorAll('.app,#map').forEach(el=>el.style.pointerEvents='auto');
   if ($id('mow2_user_label')) $id('mow2_user_label').textContent = Auth.currentUser ? escapeHtml(Auth.currentUser.username) : '';
-  // load rooms
   loadRoomsList();
 }
 
-// --------- Bind auth UI handlers ----------
 function bindAuthUI(){
   ensureAuthAndRoomsContainers();
-  $id('mow2_btn_login').onclick = async ()=> {
-    const username = $id('mow2_in_username').value.trim();
-    const password = $id('mow2_in_password').value;
-    const u = await Auth.login(username, password);
-    if (u) showRoomsScreen();
+  $id('mow2_btn_login').onclick = async ()=>{
+    const u = await Auth.login($id('mow2_in_username').value.trim(), $id('mow2_in_password').value);
+    if(u) showRoomsScreen();
   };
-  $id('mow2_btn_register').onclick = async ()=> {
-    const username = $id('mow2_in_username').value.trim();
-    const password = $id('mow2_in_password').value;
-    const u = await Auth.register(username, password);
-    if (u) showRoomsScreen();
+  $id('mow2_btn_register').onclick = async ()=>{
+    const u = await Auth.register($id('mow2_in_username').value.trim(), $id('mow2_in_password').value);
+    if(u) showRoomsScreen();
   };
-  $id('mow2_btn_guest').onclick = async ()=> {
-    const guest = 'guest_' + Math.random().toString(36).slice(2,8);
+  $id('mow2_btn_guest').onclick = async ()=>{
+    const guest = 'guest_'+Math.random().toString(36).slice(2,8);
     const u = await Auth.register(guest, uuidv4());
-    if (u) showRoomsScreen();
+    if(u) showRoomsScreen();
   };
 }
 
-// --------- Rooms list / creation (loadRoomsList, attemptJoinRoom, enterRoom, enterRoomAsViewer) ----------
+// --- Комнаты ---
 async function loadRoomsList(){
   const container = $id('mow2_rooms_list');
-  if (!container) return;
-  container.innerHTML = '<div style="color:#999;padding:8px">Загрузка...</div>';
-  try{
-    const { data: rooms, error } = await supabaseClient.from('rooms').select('id,name,owner_user_id,max_players,created_at');
-    if (error){ console.error(error); container.innerHTML = '<div style="color:#faa">Ошибка загрузки</div>'; return; }
-    // fetch owners
-    const ownerIds = Array.from(new Set((rooms||[]).map(r=>r.owner_user_id).filter(Boolean)));
-    const owners = {};
-    if (ownerIds.length){
-      const { data: users } = await supabaseClient.from('users_mow2').select('id,username').in('id', ownerIds);
-      (users||[]).forEach(u=> owners[u.id]=u.username);
-    }
-    // build list
-    container.innerHTML = (rooms||[]).map(r=>{
-      const owner = owners[r.owner_user_id] || '—';
-      return `<div style="display:flex;justify-content:space-between;align-items:center;padding:8px;border-radius:6px;background:#151515;margin-bottom:8px">
-        <div>
-          <div style="font-weight:600">${escapeHtml(r.name)}</div>
-          <div style="font-size:12px;color:#999">Создатель: ${escapeHtml(owner)}</div>
-        </div>
-        <div style="display:flex;gap:8px">
-          <button class="mow2_join" data-id="${r.id}">Войти</button>
-          <button class="mow2_view" data-id="${r.id}">Просмотр</button>
-        </div>
-      </div>`;
-    }).join('');
-    // bind
-    container.querySelectorAll('.mow2_join').forEach(b=> b.onclick = async (e)=> { const id=b.dataset.id; await attemptJoinRoom(id); });
-    container.querySelectorAll('.mow2_view').forEach(b=> b.onclick = async (e)=> { const id=b.dataset.id; await enterRoomAsViewer(id); });
-  }catch(err){
-    console.error('Ошибка загрузки списка комнат', err);
-    container.innerHTML = '<div style="color:#faa">Ошибка загрузки</div>';
+  if(!container) return;
+  container.innerHTML='<div style="color:#999;padding:8px">Загрузка...</div>';
+  const { data:rooms, error } = await supabaseClient.from('rooms').select('id,name,owner_user_id,max_players,created_at');
+  if(error){ container.innerHTML='<div style="color:#faa">Ошибка загрузки</div>'; return; }
+  const ownerIds = [...new Set((rooms||[]).map(r=>r.owner_user_id).filter(Boolean))];
+  const owners={};
+  if(ownerIds.length){
+    const { data:users } = await supabaseClient.from('users_mow2').select('id,username').in('id',ownerIds);
+    (users||[]).forEach(u=>owners[u.id]=u.username);
   }
+  container.innerHTML=(rooms||[]).map(r=>{
+    const owner=owners[r.owner_user_id]||'—';
+    return `<div style="display:flex;justify-content:space-between;align-items:center;padding:8px;border-radius:6px;background:#151515;margin-bottom:8px">
+      <div><div style="font-weight:600">${escapeHtml(r.name)}</div>
+      <div style="font-size:12px;color:#999">Создатель: ${escapeHtml(owner)}</div></div>
+      <div style="display:flex;gap:8px">
+        <button class="mow2_join" data-id="${r.id}">Войти</button>
+        <button class="mow2_view" data-id="${r.id}">Просмотр</button>
+      </div></div>`;
+  }).join('');
+  container.querySelectorAll('.mow2_join').forEach(b=>b.onclick=()=>attemptJoinRoom(b.dataset.id));
+  container.querySelectorAll('.mow2_view').forEach(b=>b.onclick=()=>enterRoomAsViewer(b.dataset.id));
 }
 
+// ---------- FIX: безопасный вход в комнату + определена enterRoom ----------
 async function attemptJoinRoom(roomId){
-  const { data: room, error } = await supabaseClient.from('rooms').select('id,name,password_hash,owner_user_id').eq('id', roomId).single();
-  if (error || !room) return showToast('Комната не найдена');
-  if (room.password_hash){
-    const pwd = prompt('Введите пароль комнаты:') || '';
-    const ok = (typeof bcrypt !== 'undefined') ? bcrypt.compareSync(pwd, room.password_hash) : (pwd === room.password_hash);
-    if (!ok) return showToast('Неверный пароль');
+  const { data:room, error } = await supabaseClient.from('rooms').select('id,name,password_hash,owner_user_id').eq('id',roomId).single();
+  if(error||!room) return showToast('Комната не найдена');
+  if(room.password_hash){
+    const pwd=prompt('Введите пароль комнаты:')||'';
+    const ok=typeof bcrypt!=='undefined'?bcrypt.compareSync(pwd,room.password_hash):pwd===room.password_hash;
+    if(!ok) return showToast('Неверный пароль');
   }
-  // add member if not exists
-  try{ await supabaseClient.from('room_members').insert([{ room_id: roomId, user_id: Auth.currentUser.id, is_owner: room.owner_user_id===Auth.currentUser.id }]); }catch(e){}
-  await enterRoom(roomId); // см. Part 3: enterRoom интегрирован с картой
-}
-
-async function enterRoomAsViewer(roomId){
-  try{ await supabaseClient.from('room_members').insert([{ room_id: roomId, user_id: Auth.currentUser.id, is_owner:false }]); }catch(e){}
+  await supabaseClient.from('room_members').upsert(
+    [{room_id:roomId,user_id:Auth.currentUser.id,is_owner:room.owner_user_id===Auth.currentUser.id}],
+    {onConflict:['room_id','user_id']}
+  );
   await enterRoom(roomId);
 }
 
-// Инициализация: если пользователь сохранён — открыть rooms, иначе auth
+async function enterRoomAsViewer(roomId){
+  await supabaseClient.from('room_members').upsert(
+    [{room_id:roomId,user_id:Auth.currentUser.id,is_owner:false}],
+    {onConflict:['room_id','user_id']}
+  );
+  await enterRoom(roomId);
+}
+
+let CURRENT_ROOM_ID=null;
+async function enterRoom(roomId){
+  CURRENT_ROOM_ID=roomId;
+  $id('mow2_rooms_container').style.display='none';
+  document.querySelectorAll('.app,#map').forEach(el=>el.style.pointerEvents='auto');
+  showToast('Вошли в комнату');
+  try{
+    const {data:room}=await supabaseClient.from('rooms').select('*').eq('id',roomId).single();
+    if(room) console.log('Room info:',room);
+  }catch(e){console.warn('Ошибка загрузки комнаты',e);}
+}
+
+// --- Инициализация ---
 (function bootAuth(){
   bindAuthUI();
-  const saved = Auth.loadFromStorage();
-  if (saved) showRoomsScreen(); else showAuthScreen();
+  const saved=Auth.loadFromStorage();
+  if(saved) showRoomsScreen(); else showAuthScreen();
 })();
 
 // Твой оригинальный script.js — инициализация карты, эшелоны, маркеры, UI, сохранение/загрузка.
