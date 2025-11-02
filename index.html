@@ -10,7 +10,7 @@
   <link rel="stylesheet" href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css" />
 
   <link rel="stylesheet" href="style.css" />
-<link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
 </head>
 <body>
   <!-- AUTH SCREEN -->
@@ -50,19 +50,19 @@
           <label>Цвет: <input type="color" id="drawColor" value="#ff0000" /></label>
         </div>
         <div class="row" style="display: flex; align-items: center; gap: 10px;">
- 	 <label for="drawWeight">Толщина:</label>
-  	<input id="drawWeight" type="range" min="1" max="12" step="1" value="3" />
-  	<span id="weightVal">3</span>
-	</div>
+          <label for="drawWeight">Толщина:</label>
+          <input id="drawWeight" type="range" min="1" max="12" step="1" value="3" />
+          <span id="weightVal">3</span>
+        </div>
         <div class="row">
           <button id="btnFront">Нанести линию фронта</button>
         </div>
-<div class="row">
-  <button id="btnFillLower">Нанести область противника</button>
-</div>
-<div class="row">
-  <button id="btnAssault">Наступление противника</button>
-</div>
+        <div class="row">
+          <button id="btnFillLower">Нанести область противника</button>
+        </div>
+        <div class="row">
+          <button id="btnAssault">Наступление противника</button>
+        </div>
         <div class="row">
           <button id="btnEraser">Очистить фронт</button>
           <button id="btnClearAll">Очистить карту</button>
@@ -74,10 +74,12 @@
         <button id="loadPlan">Загрузить план</button>
         <input type="file" id="planFileInput" accept=".json" style="display:none" />
         <div class="note">
-          <small>Инструменты рисования находятся на панели карты. 
-        Нужно нажимать "edit" и менять линию фронта. 
-        Нужно сохранять изменения "save".<br>
-	Автор — saadness</small>
+          <small>
+            Инструменты рисования находятся на панели карты. 
+            Нужно нажимать "edit" и менять линию фронта. 
+            Нужно сохранять изменения "save".<br>
+            Автор — saadness
+          </small>
         </div>
       </section>
     </aside>
@@ -90,64 +92,41 @@
   <!-- Leaflet + Draw JS -->
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
 
+  <!-- Supabase и bcrypt (оба зеркала для надёжности) -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.3/dist/umd/supabase.min.js"></script>
+  <script src="https://unpkg.com/@supabase/supabase-js@2.45.3/dist/umd/supabase.min.js"></script>
 
-<script>
-document.addEventListener('DOMContentLoaded', async () => {
-  // 1) проверяем Supabase
-  if (typeof supabase === 'undefined') {
-    console.error('❌ Supabase не загрузился — проверь CDN/сеть.');
-    return;
-  }
+  <script src="https://cdn.jsdelivr.net/npm/bcryptjs@2.4.3/dist/bcrypt.min.js"></script>
+  <script src="https://unpkg.com/bcryptjs@2.4.3/dist/bcrypt.min.js"></script>
 
-  // Утилита: нормализовать имя bcrypt (учитываем dcodeIO.bcrypt)
-  function resolveBcrypt() {
-    if (typeof bcrypt !== 'undefined') return bcrypt;
-    if (typeof window.dcodeIO !== 'undefined' && window.dcodeIO.bcrypt) return window.dcodeIO.bcrypt;
-    if (typeof window.bCrypt !== 'undefined') return window.bCrypt; // ещё вариант
-    return null;
-  }
+  <!-- Основная инициализация -->
+  <script>
+    document.addEventListener('DOMContentLoaded', () => {
+      if (typeof supabase === 'undefined') {
+        console.error('❌ Supabase не загрузился (CDN/CSP/блокировка)');
+        return;
+      }
+      if (typeof bcrypt === 'undefined' && !(window.dcodeIO && window.dcodeIO.bcrypt)) {
+        console.error('❌ bcrypt не загрузился');
+        return;
+      }
 
-  let bcryptLib = resolveBcrypt();
+      const bcryptLib = window.bcrypt || (window.dcodeIO && window.dcodeIO.bcrypt);
+      window.bcrypt = bcryptLib; // унифицируем имя
 
-  // 2) если bcrypt отсутствует, пытаемся подгрузить локально и выполнить
-  if (!bcryptLib) {
-    try {
-      console.warn('⚠️ bcrypt не найден глобально, пытаюсь загрузить /bcrypt.min.js через fetch...');
-      const resp = await fetch('/bcrypt.min.js', { cache: 'no-store' });
-      if (!resp.ok) throw new Error('fetch status ' + resp.status);
-      const code = await resp.text();
-      // Выполним код в глобальной области (самый надёжный способ проинициализировать UMD-бандл)
-      (0, eval)(code);
-      bcryptLib = resolveBcrypt();
-      if (!bcryptLib) throw new Error('После eval bcrypt всё ещё не определён (проверь файл)');
-      console.log('✅ bcrypt успешно загружен и инициализирован через fetch+eval');
-    } catch (err) {
-      console.error('❌ Не удалось загрузить или инициализировать bcrypt:', err);
-      return;
-    }
-  } else {
-    console.log('✅ bcrypt найден в глобальной области');
-  }
+      window.supabaseClient = supabase.createClient(
+        'https://zqklzhipwiifrrbyentg.supabase.co',
+        'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inpxa2x6aGlwd2lpZnJyYnllbnRnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjA5NzQ0ODYsImV4cCI6MjA3NjU1MDQ4Nn0.siMc2xCvoBEjwNVwaOVvjlOtDODs9yDo0IDyGl9uWso'
+      );
 
-  // 3) создаём клиент Supabase и подключаем основной скрипт
-  try {
-    window.supabaseClient = supabase.createClient(
-      'https://zqklzhipwiifrrbyentg.supabase.co',
-      'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inpxa2x6aGlwd2lpZnJyYnllbnRnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjA5NzQ0ODYsImV4cCI6MjA3NjU1MDQ4Nn0.siMc2xCvoBEjwNVwaOVvjlOtDODs9yDo0IDyGl9uWso'
-    );
-  } catch (err) {
-    console.error('❌ Ошибка при создании supabaseClient:', err);
-    return;
-  }
+      const s = document.createElement('script');
+      s.src = './script.js';
+      document.body.appendChild(s);
 
-  // 4) подключаем основной скрипт динамически (он запустится уже с готовыми зависимостями)
-  const s = document.createElement('script');
-  s.src = './script.js';
-  document.body.appendChild(s);
-  console.log('✅ Supabase и bcrypt готовы, script.js подключён.');
-});
-</script>
+      console.log('✅ Supabase и bcrypt готовы, script.js загружен');
+    });
+  </script>
 </body>
 </html>
