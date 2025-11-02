@@ -93,13 +93,22 @@
 <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
 
 
-<!-- библиотека Supabase -->
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.3/dist/umd/supabase.js"></script>
+<!-- Подключаем Supabase и bcrypt с атрибутом defer -->
+<script defer src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.3/dist/umd/supabase.js"></script>
+<script defer src="./bcrypt.min.js"></script>
 
-<!-- библиотека bcryptjs -->
-<script src="./bcrypt.min.js"></script>
-
-<!-- основной скрипт проекта -->
-<script src="./script.js"></script>
+<!-- Загружаем твой код ТОЛЬКО после загрузки зависимостей -->
+<script>
+window.addEventListener('load', async () => {
+  if (typeof supabase === 'undefined' || typeof bcrypt === 'undefined') {
+    console.error('❌ Ошибка: библиотеки Supabase или bcrypt не загрузились');
+    return;
+  }
+  // Загружаем основной скрипт, когда зависимости гарантированно готовы
+  const s = document.createElement('script');
+  s.src = './script.js';
+  document.body.appendChild(s);
+});
+</script>
 </body>
 </html>
