@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>MoW2 Battle Planner</title>
+
+  <!-- Leaflet + Draw CSS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css" />
+
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <!-- AUTH SCREEN -->
+  <div id="auth-screen" style="display:none;"></div>
+  <!-- ROOMS SCREEN -->
+  <div id="rooms-screen" style="display:none;"></div>
+  <!-- GAME SCREEN (original content) -->
+
+  <div class="app">
+    <aside class="sidebar">
+      <h1>MoW2 Battle Planner</h1>
+
+      <section class="map-select">
+        <label for="mapSelect">Выберите карту:</label>
+        <select id="mapSelect" aria-label="Выбор карты"></select>
+        <div style="margin-top:8px;">
+          <button id="btnLoadMap">Загрузить карту</button>
+          <button id="btnResetMap">Сбросить карту</button>
+        </div>
+      </section>
+
+      <section class="teams">
+        <h2>Команды</h2>
+        <div class="team" id="teamBlue">
+          <h3 style="color:#42a5f5">Синие</h3>
+          <div id="bluePlayers"></div>
+        </div>
+        <div class="team" id="teamRed">
+          <h3 style="color:#ef5350">Красные</h3>
+          <div id="redPlayers"></div>
+        </div>
+      </section>
+
+      <section class="drawing-tools">
+        <h2>Инструменты рисования</h2>
+        <div class="row">
+          <label>Цвет: <input type="color" id="drawColor" value="#ff0000" /></label>
+        </div>
+        <div class="row" style="display: flex; align-items: center; gap: 10px;">
+ 	 <label for="drawWeight">Толщина:</label>
+  	<input id="drawWeight" type="range" min="1" max="12" step="1" value="3" />
+  	<span id="weightVal">3</span>
+	</div>
+        <div class="row">
+          <button id="btnFront">Нанести линию фронта</button>
+        </div>
+<div class="row">
+  <button id="btnFillLower">Нанести область противника</button>
+</div>
+<div class="row">
+  <button id="btnAssault">Наступление противника</button>
+</div>
+        <div class="row">
+          <button id="btnEraser">Очистить фронт</button>
+          <button id="btnClearAll">Очистить карту</button>
+        </div>
+        <div class="row">
+          <button id="btnSave">Сохранить план</button>
+        </div>
+        <button id="btnSaveImage">Сохранить карту как .jpg</button>
+        <button id="loadPlan">Загрузить план</button>
+        <input type="file" id="planFileInput" accept=".json" style="display:none" />
+        <div class="note">
+          <small>Инструменты рисования находятся на панели карты. 
+        Нужно нажимать "edit" и менять линию фронта. 
+        Нужно сохранять изменения "save".<br>
+	Автор — saadness</small>
+        </div>
+      </section>
+    </aside>
+
+    <main class="map-area">
+      <div id="map"></div>
+    </main>
+  </div>
+
+  <!-- Leaflet + Draw JS -->
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
+
+
+  <script src="
+<!-- Supabase and bcrypt (for custom auth) -->
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js/dist/umd/supabase.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/bcryptjs/dist/bcrypt.min.js"></script>
+
+<script src="script.js""></script>
+</body>
+</html>
