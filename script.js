@@ -171,68 +171,284 @@ function bindAuthUI(){
 }
 
 // --- Комнаты ---
-async function loadRoomsList(){
-  const container = $id('mow2_rooms_list');
-  if(!container) return;
-  container.innerHTML='<div style="color:#999;padding:8px">Загрузка...</div>';
-  const { data:rooms, error } = await supabaseClient.from('rooms').select('id,name,owner_user_id,max_players,created_at');
-  if(error){ container.innerHTML='<div style="color:#faa">Ошибка загрузки</div>'; return; }
-  const ownerIds = [...new Set((rooms||[]).map(r=>r.owner_user_id).filter(Boolean))];
-  const owners={};
-  if(ownerIds.length){
-    const { data:users } = await supabaseClient.from('users_mow2').select('id,username').in('id',ownerIds);
-    (users||[]).forEach(u=>owners[u.id]=u.username);
-  }
-  container.innerHTML=(rooms||[]).map(r=>{
-    const owner=owners[r.owner_user_id]||'—';
-    return `<div style="display:flex;justify-content:space-between;align-items:center;padding:8px;border-radius:6px;background:#151515;margin-bottom:8px">
-      <div><div style="font-weight:600">${escapeHtml(r.name)}</div>
-      <div style="font-size:12px;color:#999">Создатель: ${escapeHtml(owner)}</div></div>
-      <div style="display:flex;gap:8px">
-        <button class="mow2_join" data-id="${r.id}">Войти</button>
-        <button class="mow2_view" data-id="${r.id}">Просмотр</button>
-      </div></div>`;
-  }).join('');
-  container.querySelectorAll('.mow2_join').forEach(b=>b.onclick=()=>attemptJoinRoom(b.dataset.id));
-  container.querySelectorAll('.mow2_view').forEach(b=>b.onclick=()=>enterRoomAsViewer(b.dataset.id));
+let ROOM_PANEL_STATE = { open: false };
+
+async function initRoomPanel() {
+  // если уже есть — обновим
+  if (document.getElementById('mow2_room_panel')) return refreshRoomPanel();
+
+  const panel = document.createElement('div');
+  panel.id = 'mow2_room_panel';
+  Object.assign(panel.style, {
+    position: 'absolute',
+    top: '12px',
+    left: '50%',
+    transform: 'translateX(-50%)',
+    background: 'rgba(20,20,20,0.9)',
+    color: '#ddd',
+    padding: '8px',
+    borderRadius: '10px',
+    zIndex: 99999,
+    minWidth: '360px',
+    fontFamily: 'sans-serif',
+    boxShadow: '0 6px 18px rgba(0,0,0,0.6)'
+  });
+
+  // header: room name + toggle
+  const header = document.createElement('div');
+  header.style.display = 'flex';
+  header.style.justifyContent = 'space-between';
+  header.style.alignItems = 'center';
+  header.style.gap = '8px';
+
+  const title = document.createElement('div');
+  title.id = 'mow2_room_panel_title';
+  title.textContent = 'Комната';
+  title.style.fontWeight = '700';
+  header.appendChild(title);
+
+  const rightControls = document.createElement('div');
+  rightControls.style.display = 'flex';
+  rightControls.style.gap = '6px';
+  // collapse button
+  const toggle = document.createElement('button');
+  toggle.id = 'mow2_room_panel_toggle';
+  toggle.textContent = '▾';
+  toggle.style.background = 'none';
+  toggle.style.border = 'none';
+  toggle.style.color = '#ddd';
+  toggle.style.cursor = 'pointer';
+  toggle.onclick = () => {
+    ROOM_PANEL_STATE.open = !ROOM_PANEL_STATE.open;
+    body.style.display = ROOM_PANEL_STATE.open ? 'block' : 'none';
+    toggle.textContent = ROOM_PANEL_STATE.open ? '▴' : '▾';
+  };
+  rightControls.appendChild(toggle);
+  header.appendChild(rightControls);
+  panel.appendChild(header);
+
+  // body: info + players + owner controls
+  const body = document.createElement('div');
+  body.id = 'mow2_room_panel_body';
+  body.style.marginTop = '8px';
+  body.style.display = ROOM_PANEL_STATE.open ? 'block' : 'none';
+
+  // room info row
+  const infoRow = document.createElement('div');
+  infoRow.style.display = 'flex';
+  infoRow.style.justifyContent = 'space-between';
+  infoRow.style.alignItems = 'center';
+  infoRow.style.gap = '8px';
+
+  const infoLeft = document.createElement('div');
+  infoLeft.innerHTML = `<div style="font-size:13px">Название: <span id="mow2_room_name_label">—</span></div>
+                        <div style="font-size:12px;color:#aaa">Создатель: <span id="mow2_room_owner_label">—</span></div>`;
+  infoRow.appendChild(infoLeft);
+
+  // who has turn
+  const turnDiv = document.createElement('div');
+  turnDiv.style.textAlign = 'right';
+  turnDiv.innerHTML = `<div style="font-size:13px;color:#ffb;">Ход: <span id="mow2_room_turn_label">—</span></div>`;
+  infoRow.appendChild(turnDiv);
+
+  body.appendChild(infoRow);
+
+  // players list
+  const playersTitle = document.createElement('div');
+  playersTitle.textContent = 'Игроки:';
+  playersTitle.style.marginTop = '8px';
+  playersTitle.style.fontSize = '13px';
+  playersTitle.style.color = '#ddd';
+  body.appendChild(playersTitle);
+
+  const playersList = document.createElement('div');
+  playersList.id = 'mow2_room_players';
+  playersList.style.display = 'flex';
+  playersList.style.flexDirection = 'column';
+  playersList.style.gap = '6px';
+  playersList.style.maxHeight = '150px';
+  playersList.style.overflowY = 'auto';
+  playersList.style.marginTop = '6px';
+  body.appendChild(playersList);
+
+  // owner action row
+  const ownerRow = document.createElement('div');
+  ownerRow.style.display = 'flex';
+  ownerRow.style.justifyContent = 'flex-end';
+  ownerRow.style.gap = '6px';
+  ownerRow.style.marginTop = '8px';
+
+  const btnSaveState = document.createElement('button');
+  btnSaveState.textContent = 'Сохранить (созд.)';
+  btnSaveState.style.padding = '6px';
+  btnSaveState.style.cursor = 'pointer';
+  btnSaveState.onclick = async () => {
+    // Только для владельца -> сохраняем snapshot всех эшелонов (hook)
+    if (!await amIOwner()) return showToast('Только создатель может сохранить');
+    try {
+      // HOOK: создаём snapshot (серилизация карты) — вызываем captureMapState для каждого эшелона
+      const snapshot = {
+        e1: echelonStates[1],
+        e2: echelonStates[2],
+        e3: echelonStates[3]
+      };
+      await supabaseClient.from('echelon_snapshots').insert([{ room_id: CURRENT_ROOM_ID, echelon: 0, snapshot }]);
+      showToast('Сохранено создателем');
+    } catch (e) { console.warn(e); showToast('Ошибка сохранения'); }
+  };
+  ownerRow.appendChild(btnSaveState);
+
+  const btnClearMap = document.createElement('button');
+  btnClearMap.textContent = 'Очистить карту';
+  btnClearMap.style.padding = '6px';
+  btnClearMap.style.cursor = 'pointer';
+  btnClearMap.onclick = async () => {
+    if (!await amIOwner()) return showToast('Только создатель может очищать карту');
+    // HOOK: очистка карты локально — также сохранить удаление в БД при необходимости
+    clearMapAll();
+    showToast('Карта очищена (локально)');
+    // возможно: удалить markers/drawings в БД - если реализовано
+  };
+  ownerRow.appendChild(btnClearMap);
+
+  body.appendChild(ownerRow);
+  panel.appendChild(body);
+
+  document.body.appendChild(panel);
+
+  // initial load
+  refreshRoomPanel();
 }
 
-// ---------- FIX: безопасный вход в комнату + определена enterRoom ----------
-async function attemptJoinRoom(roomId){
-  const { data:room, error } = await supabaseClient.from('rooms').select('id,name,password_hash,owner_user_id').eq('id',roomId).single();
-  if(error||!room) return showToast('Комната не найдена');
-  if(room.password_hash){
-    const pwd=prompt('Введите пароль комнаты:')||'';
-    const ok=typeof bcrypt!=='undefined'?bcrypt.compareSync(pwd,room.password_hash):pwd===room.password_hash;
-    if(!ok) return showToast('Неверный пароль');
-  }
-  await supabaseClient.from('room_members').upsert(
-    [{room_id:roomId,user_id:Auth.currentUser.id,is_owner:room.owner_user_id===Auth.currentUser.id}],
-    {onConflict:['room_id','user_id']}
-  );
-  await enterRoom(roomId);
+// helper: am I owner of current room?
+async function amIOwner() {
+  if (!CURRENT_ROOM_ID || !Auth.currentUser) return false;
+  try {
+    const { data } = await supabaseClient.from('rooms').select('owner_user_id').eq('id', CURRENT_ROOM_ID).single();
+    return data && data.owner_user_id === Auth.currentUser.id;
+  } catch (e) { console.warn(e); return false; }
 }
 
-async function enterRoomAsViewer(roomId){
-  await supabaseClient.from('room_members').upsert(
-    [{room_id:roomId,user_id:Auth.currentUser.id,is_owner:false}],
-    {onConflict:['room_id','user_id']}
-  );
-  await enterRoom(roomId);
+// refresh players and room info
+async function refreshRoomPanel() {
+  const titleEl = $id('mow2_room_name_label');
+  const ownerEl = $id('mow2_room_owner_label');
+  const turnEl = $id('mow2_room_turn_label');
+  const playersContainer = $id('mow2_room_players');
+  if (!playersContainer) return;
+
+  // load room info
+  try {
+    const { data: room } = await supabaseClient.from('rooms').select('*').eq('id', CURRENT_ROOM_ID).single();
+    if (room) {
+      if (titleEl) titleEl.textContent = room.name || '—';
+      if (ownerEl) {
+        // fetch owner's username
+        const { data: owner } = await supabaseClient.from('users_mow2').select('username').eq('id', room.owner_user_id).limit(1).single();
+        ownerEl.textContent = owner? owner.username : '—';
+      }
+      if (turnEl) {
+        turnEl.textContent = (room.turn_owner_username || room.turn_owner_user_id) || '—';
+      }
+    }
+  } catch (e) { console.warn('loadRoom info', e); }
+
+  // list members
+  playersContainer.innerHTML = '<div style="color:#999">Загрузка...</div>';
+  try {
+    const { data: members } = await supabaseClient.from('room_members').select('user_id,is_owner').eq('room_id', CURRENT_ROOM_ID);
+    const userIds = (members||[]).map(m=>m.user_id);
+    const { data: users } = await supabaseClient.from('users_mow2').select('id,username').in('id', userIds);
+    const usersMap = {};
+    (users||[]).forEach(u=> usersMap[u.id] = u.username);
+
+    playersContainer.innerHTML = '';
+    for (const m of (members||[])) {
+      const row = document.createElement('div');
+      row.style.display = 'flex';
+      row.style.justifyContent = 'space-between';
+      row.style.alignItems = 'center';
+      row.style.background = 'rgba(15,15,15,0.6)';
+      row.style.padding = '6px';
+      row.style.borderRadius = '6px';
+      const name = document.createElement('div');
+      name.textContent = usersMap[m.user_id] || m.user_id;
+      if (m.is_owner) name.textContent += ' (создатель)';
+      row.appendChild(name);
+
+      const actions = document.createElement('div');
+      actions.style.display = 'flex';
+      actions.style.gap = '6px';
+
+      // kick button (visible to owner, not to self)
+      const kickBtn = document.createElement('button');
+      kickBtn.textContent = 'Выгнать';
+      kickBtn.style.padding = '4px';
+      kickBtn.style.cursor = 'pointer';
+      kickBtn.onclick = async () => {
+        if (!await amIOwner()) return showToast('Только создатель может выгнать');
+        if (m.user_id === Auth.currentUser.id) return showToast('Нельзя выгнать себя');
+        // remove from room_members
+        try {
+          await supabaseClient.from('room_members').delete().match({ room_id: CURRENT_ROOM_ID, user_id: m.user_id });
+          showToast('Игрок выгнан');
+          refreshRoomPanel();
+        } catch (e) { console.warn(e); showToast('Ошибка'); }
+      };
+
+      // transfer turn button (visible to owner)
+      const giveBtn = document.createElement('button');
+      giveBtn.textContent = 'Дать ход';
+      giveBtn.style.padding = '4px';
+      giveBtn.style.cursor = 'pointer';
+      giveBtn.onclick = async () => {
+        if (!await amIOwner()) return showToast('Только создатель может передавать ход');
+        try {
+          await supabaseClient.from('rooms').update({ turn_owner_user_id: m.user_id }).eq('id', CURRENT_ROOM_ID);
+          showToast('Ход передан');
+          refreshRoomPanel();
+        } catch (e) { console.warn(e); showToast('Ошибка передачи'); }
+      };
+
+      // show buttons only for owner (not for regular players)
+      const iAmOwner = await amIOwner();
+      if (iAmOwner) {
+        if (m.user_id !== Auth.currentUser.id) actions.appendChild(kickBtn);
+        actions.appendChild(giveBtn);
+      }
+
+      row.appendChild(actions);
+      playersContainer.appendChild(row);
+    }
+  } catch (e) { console.warn('load members', e); playersContainer.innerHTML = '<div style="color:#faa">Ошибка</div>'; }
 }
 
-let CURRENT_ROOM_ID=null;
-async function enterRoom(roomId){
-  CURRENT_ROOM_ID=roomId;
-  $id('mow2_rooms_container').style.display='none';
-  document.querySelectorAll('.app,#map').forEach(el=>el.style.pointerEvents='auto');
-  showToast('Вошли в комнату');
-  try{
-    const {data:room}=await supabaseClient.from('rooms').select('*').eq('id',roomId).single();
-    if(room) console.log('Room info:',room);
-  }catch(e){console.warn('Ошибка загрузки комнаты',e);}
+// helper: call when entering room
+async function showRoomPanelOnEnter() {
+  await initRoomPanel();
+  await refreshRoomPanel();
+  // add a lightweight subscription to room_members/rooms if desired (real-time)
+  // e.g. supabaseClient.from(`room_members:room_id=eq.${CURRENT_ROOM_ID}`).on('INSERT', ...).subscribe()
 }
 
+// small util: clear map -- hook into your map clearing logic
+function clearMapAll() {
+  // HOOK: replace with your existing clearing functions
+  try {
+    // remove markers
+    markerList.forEach(m=> {
+      try{ map.removeLayer(m.marker); }catch(e){}
+    });
+    markerList = [];
+    // clear drawn items
+    if (typeof drawnItems !== 'undefined') drawnItems.clearLayers();
+    // optionally clear simpleMarkers array and leaflet layers
+    simpleMarkers.forEach(s=>{ try{ map.removeLayer(s.layer); }catch(e){} });
+    simpleMarkers = [];
+    // reset echelon states
+    echelonStates = {1:{markers:[],simple:[],drawings:[]},2:{markers:[],simple:[],drawings:[]},3:{markers:[],simple:[],drawings:[]}};
+  } catch (e) { console.warn('clearMapAll', e); }
+}
 // --- Инициализация ---
 (function bootAuth(){
   bindAuthUI();
