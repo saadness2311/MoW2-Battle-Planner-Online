@@ -450,11 +450,30 @@ function clearMapAll() {
   } catch (e) { console.warn('clearMapAll', e); }
 }
 // --- Инициализация ---
-window.addEventListener('load', () => {
-  bindAuthUI();
+// --- Финальная инициализация ---
+window.addEventListener('DOMContentLoaded', async () => {
+  // гарантируем, что контейнеры созданы
+  ensureAuthAndRoomsContainers();
+
+  // восстанавливаем пользователя
   const saved = Auth.loadFromStorage();
-  if (saved) showRoomsScreen(); else showAuthScreen();
+
+  // назначаем кнопки и обработчики
+  bindAuthUI();
+
+  // теперь можно показать экран
+  if (saved) {
+    // обновляем подпись пользователя
+    if ($id('mow2_user_label')) {
+      $id('mow2_user_label').textContent = Auth.currentUser.username;
+    }
+    // показываем список комнат
+    showRoomsScreen();
+  } else {
+    showAuthScreen();
+  }
 });
+
 
 // Твой оригинальный script.js — инициализация карты, эшелоны, маркеры, UI, сохранение/загрузка.
 // Небольшие правки: добавлены хук-вызовы в местах создания/перемещения маркеров
