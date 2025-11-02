@@ -12,6 +12,13 @@
   const { createClient } = supabase; // UMD bundle exposes global `supabase`
   const supabaseClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
+// ensure bcrypt global
+const bcrypt = window.bcrypt || (window.dcodeIO && window.dcodeIO.bcrypt);
+if (!bcrypt) {
+  console.error("bcryptjs не найден, убедись, что <script src='https://cdn.jsdelivr.net/npm/bcryptjs/dist/bcrypt.min.js'></script> подключён ПЕРЕД script.js");
+  alert("Ошибка: bcryptjs не загружен");
+}
+
   // Utils
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const nowIso = () => new Date().toISOString();
