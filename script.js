@@ -2,11 +2,12 @@
 // (Не трогаем визуал сайта — стили темно-серые сохраняются.)
 
 /* --- Supabase и bcrypt --- */
-const SUPABASE_URL = 'https://zqklzhipwiifrrbyentg.supabase.co';
-const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inpxa2x6aGlwd2lpZnJyYnllbnRnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjA5NzQ0ODYsImV4cCI6MjA3NjU1MDQ4Nn0.siMc2xCvoBEjwNVwaOVvjlOtDODs9yDo0IDyGl9uWso';
-
-if (typeof supabase === 'undefined' || !supabase.createClient) { console.warn('Supabase JS не найден. Подключи UMD: https://cdn.jsdelivr.net/npm/@supabase/supabase-js/dist/umd/supabase.js'); } if (typeof bcrypt === 'undefined') { console.warn('bcryptjs не найден. Подключи: https://cdn.jsdelivr.net/npm/bcryptjs/dist/bcrypt.min.js'); } const supabaseClient = (typeof supabase !== 'undefined' && supabase.createClient) ? supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
-
+const supabaseClient = (typeof supabase !== 'undefined' && supabase.createClient)
+  ? supabase.createClient(
+      'https://zqklzhipwiifrrbyentg.supabase.co',
+      'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inpxa2x6aGlwd2lpZnJyYnllbnRnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjA5NzQ0ODYsImV4cCI6MjA3NjU1MDQ4Nn0.siMc2xCvoBEjwNVwaOVvjlOtDODs9yDo0IDyGl9uWso'
+    )
+  : null;
 // Вспомогательные утилиты (оставлены в том же стиле)
 function $id(id){ return document.getElementById(id); }
 function createEl(tag, cls){ const e = document.createElement(tag); if(cls) e.className = cls; return e; }
