@@ -120,16 +120,74 @@ function showAuthScreen(){
   document.querySelectorAll('.app, #map').forEach(el=>{ if(el) el.style.pointerEvents='none'; });
 }
 
-function showRoomsScreen(){
-  ensureAuthAndRoomsContainers();
-  $id('mow2_auth_container').style.display='none';
-  $id('mow2_rooms_container').style.display='flex';
-  document.querySelectorAll('.app, #map').forEach(el=>{ if(el) el.style.pointerEvents='none'; });
-  // fill user label
-  const u = Auth.currentUser || Auth.loadFromStorage();
-  if (u) $id('mow2_user_label').textContent = `Пользователь: ${u.username}`;
-  loadRoomsList();
+// Назначаем события после появления DOM-элементов
+const btnCreate = document.getElementById('mow2_btn_create_room');
+if (btnCreate) {
+  btnCreate.addEventListener('click', async () => {
+    const name = document.getElementById('mow2_room_name').value.trim();
+    const pwd = document.getElementById('mow2_room_pwd').value || null;
+
+    if (!name) {
+      alert('Введите название комнаты');
+      return;
+    }
+
+    // Ограничение: максимум 4 комнаты на пользователя
+    const { data: owned } = await supabaseClient
+      .from('rooms')
+      .select('id')
+      .eq('owner_user_id', Auth.currentUser.id);
+
+    if (owned && owned.length >= 4) {
+      alert('Лимит: максимум 4 комнаты');
+      return;
+    }
+
+    // Хэш пароля (если есть)
+    const password_hash = pwd
+      ? (typeof bcrypt !== 'undefined' ? bcrypt.hashSync(pwd, 10) : pwd)
+      : null;
+
+    // Создаём комнату
+    const { data, error } = await supabaseClient
+      .from('rooms')
+      .insert([{
+        name,
+        password_hash,
+        owner_user_id: Auth.currentUser.id,
+        current_echelon: 1,
+        max_players: 50,
+        settings: {}
+      }])
+      .select()
+      .single();
+
+    if (error) {
+      console.error(error);
+      alert('Ошибка создания комнаты');
+      return;
+    }
+
+    // Добавляем создателя в room_members
+    await supabaseClient.from('room_members').insert([{
+      room_id: data.id,
+      user_id: Auth.currentUser.id,
+      is_owner: true
+    }]);
+
+    alert('Комната создана');
+    loadRoomsList();
+  });
 }
+
+// Выход
+const btnLogout = document.getElementById('mow2_btn_logout');
+if (btnLogout) {
+  btnLogout.addEventListener('click', () => {
+    Auth.logout();
+  });
+}
+
 
 // --------- Bind auth UI handlers ----------
 function bindAuthUI(){
@@ -185,24 +243,6 @@ async function loadRoomsList(){
   container.querySelectorAll('.mow2_join').forEach(b=> b.onclick = async (e)=> { const id=b.dataset.id; await attemptJoinRoom(id); });
   container.querySelectorAll('.mow2_view').forEach(b=> b.onclick = async (e)=> { const id=b.dataset.id; await enterRoomAsViewer(id); });
 }
-
-$id && $id('mow2_btn_create_room') && $id('mow2_btn_create_room').addEventListener('click', async ()=>{
-  const name = $id('mow2_room_name').value.trim();
-  const pwd = $id('mow2_room_pwd').value || null;
-  if (!name) return showToast('Введите название комнаты');
-  // check owned rooms count
-  const { data: owned } = await supabaseClient.from('rooms').select('id').eq('owner_user_id', Auth.currentUser.id);
-  if (owned && owned.length >= 4) { showToast('Лимит: вы уже создали 4 комнаты'); return; }
-  const password_hash = pwd ? (typeof bcrypt !== 'undefined' ? bcrypt.hashSync(pwd,10) : pwd) : null;
-  const { data, error } = await supabaseClient.from('rooms').insert([{
-    name, password_hash, owner_user_id: Auth.currentUser.id, current_echelon:1, max_players:50, settings: {}
-  }]).select().single();
-  if (error){ console.error(error); showToast('Ошибка создания комнаты'); return; }
-  // add membership
-  await supabaseClient.from('room_members').insert([{ room_id: data.id, user_id: Auth.currentUser.id, is_owner:true }]);
-  showToast('Комната создана');
-  loadRoomsList();
-});
 
 // пытаемся присоединиться (если пароль есть — запросить)
 async function attemptJoinRoom(roomId){
