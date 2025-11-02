@@ -93,35 +93,61 @@
 <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
 
 
-<!-- Подключаем Supabase и bcrypt напрямую и синхронно -->
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.3/dist/umd/supabase.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/bcryptjs@2.4.3/dist/bcrypt.min.js"></script>
-
-<!-- Основной скрипт проекта -->
 <script>
-  // ждем, пока всё прогрузится в window
-  document.addEventListener('DOMContentLoaded', () => {
-    if (typeof supabase === 'undefined') {
-      console.error('❌ Supabase не загрузился (проверь сеть или CSP)');
-      return;
-    }
-    if (typeof bcrypt === 'undefined') {
-      console.error('❌ bcryptjs не загрузился (CDN или блокировка)');
-      return;
-    }
+document.addEventListener('DOMContentLoaded', async () => {
+  // 1) проверяем Supabase
+  if (typeof supabase === 'undefined') {
+    console.error('❌ Supabase не загрузился — проверь CDN/сеть.');
+    return;
+  }
 
-    // теперь создаем клиент и подключаем твой код
+  // Утилита: нормализовать имя bcrypt (учитываем dcodeIO.bcrypt)
+  function resolveBcrypt() {
+    if (typeof bcrypt !== 'undefined') return bcrypt;
+    if (typeof window.dcodeIO !== 'undefined' && window.dcodeIO.bcrypt) return window.dcodeIO.bcrypt;
+    if (typeof window.bCrypt !== 'undefined') return window.bCrypt; // ещё вариант
+    return null;
+  }
+
+  let bcryptLib = resolveBcrypt();
+
+  // 2) если bcrypt отсутствует, пытаемся подгрузить локально и выполнить
+  if (!bcryptLib) {
+    try {
+      console.warn('⚠️ bcrypt не найден глобально, пытаюсь загрузить /bcrypt.min.js через fetch...');
+      const resp = await fetch('/bcrypt.min.js', { cache: 'no-store' });
+      if (!resp.ok) throw new Error('fetch status ' + resp.status);
+      const code = await resp.text();
+      // Выполним код в глобальной области (самый надёжный способ проинициализировать UMD-бандл)
+      (0, eval)(code);
+      bcryptLib = resolveBcrypt();
+      if (!bcryptLib) throw new Error('После eval bcrypt всё ещё не определён (проверь файл)');
+      console.log('✅ bcrypt успешно загружен и инициализирован через fetch+eval');
+    } catch (err) {
+      console.error('❌ Не удалось загрузить или инициализировать bcrypt:', err);
+      return;
+    }
+  } else {
+    console.log('✅ bcrypt найден в глобальной области');
+  }
+
+  // 3) создаём клиент Supabase и подключаем основной скрипт
+  try {
     window.supabaseClient = supabase.createClient(
       'https://zqklzhipwiifrrbyentg.supabase.co',
       'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inpxa2x6aGlwd2lpZnJyYnllbnRnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjA5NzQ0ODYsImV4cCI6MjA3NjU1MDQ4Nn0.siMc2xCvoBEjwNVwaOVvjlOtDODs9yDo0IDyGl9uWso'
     );
+  } catch (err) {
+    console.error('❌ Ошибка при создании supabaseClient:', err);
+    return;
+  }
 
-    const s = document.createElement('script');
-    s.src = './script.js';
-    document.body.appendChild(s);
-
-    console.log('✅ Supabase и bcrypt подключены, script.js загружен');
-  });
+  // 4) подключаем основной скрипт динамически (он запустится уже с готовыми зависимостями)
+  const s = document.createElement('script');
+  s.src = './script.js';
+  document.body.appendChild(s);
+  console.log('✅ Supabase и bcrypt готовы, script.js подключён.');
+});
 </script>
 </body>
 </html>
