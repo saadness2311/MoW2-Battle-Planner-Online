@@ -553,6 +553,7 @@ async function showRoomPanelOnEnter() {
   await initRoomPanel();
   await refreshRoomPanel();
   setupRealtimeForRoom();
+setTimeout(refreshRoomPanel, 1000);
   // add a lightweight subscription to room_members/rooms if desired (real-time)
   // e.g. supabaseClient.from(`room_members:room_id=eq.${CURRENT_ROOM_ID}`).on('INSERT', ...).subscribe()
 }
@@ -726,6 +727,9 @@ function animateMarkerTo(marker, targetLatLng, duration = 350){
 // Запись финальной позиции маркера (вызов по dragend)
 // если markerOrEntry - leaflet marker, пытаемся найти id в markerList
 async function writeFinalMarkerPosition(markerOrEntry){
+  // helper to validate uuid
+  function isValidUUID(u){ return typeof u === 'string' && /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$/.test(u); }
+
   if(!CURRENT_ROOM_ID || !Auth.currentUser) return;
   const haveTurn = await ensureMyTurn();
   if(!haveTurn) {
@@ -752,14 +756,47 @@ async function writeFinalMarkerPosition(markerOrEntry){
 
     if(id){
       // UPDATE существующего маркера
-      const { error } = await supabaseClient.from('markers').update({
-        x: String(latlng.lat),
-        y: String(latlng.lng),
-        updated_at: new Date().toISOString(),
-        status: 'idle',
-        last_moved_by: Auth.currentUser.id
-      }).eq('id', id).eq('room_id', CURRENT_ROOM_ID);
-      if(error) { console.warn('writeFinalMarkerPosition update error', error); showToast('Ошибка сохранения позиции'); }
+      try{
+        if(!isValidUUID(id)){
+          // локальный текстовый id (например 'blue-4') — вместо UPDATE делаем INSERT нового маркера с реальным UUID
+          console.warn('writeFinalMarkerPosition: id is not UUID, inserting new marker instead of update', id);
+          throw { code: 'LOCAL_ID_NOT_UUID' };
+        }
+        const { error } = await supabaseClient.from('markers').update({
+          x: String(latlng.lat),
+          y: String(latlng.lng),
+          updated_at: new Date().toISOString(),
+          status: 'idle',
+          last_moved_by: Auth.currentUser.id
+        }).eq('id', id).eq('room_id', CURRENT_ROOM_ID);
+        if(error) { console.warn('writeFinalMarkerPosition update error', error); showToast('Ошибка сохранения позиции'); }
+      }catch(upErr){
+        // если ошибка из-за невалидного uuid или по другой причине — попробуем вставить новый маркер и привязать локально
+        try{
+          const fallbackId = uuidLocal();
+          const payloadFallback = {
+            id: fallbackId,
+            room_id: CURRENT_ROOM_ID,
+            echelon: (typeof currentEchelon !== 'undefined' ? currentEchelon : 1),
+            symb_name: (markerOrEntry._symbName || (markerOrEntry._simpleType || null)),
+            x: String(latlng.lat),
+            y: String(latlng.lng),
+            rotation: 0,
+            meta: { created_by: Auth.currentUser.id, migrated_from: id },
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString()
+          };
+          const { error: insErr } = await supabaseClient.from('markers').insert([payloadFallback]);
+          if(insErr){ console.warn('writeFinalMarkerPosition fallback insert error', insErr); showToast('Ошибка сохранения позиции (fallback)'); }
+          else {
+            // attach id locally if we can
+            try{
+              const found = (typeof simpleMarkers !== 'undefined') ? simpleMarkers.find(s=> s._leaflet_id === markerOrEntry._leaflet_id) : null;
+              if(found) markerList.push({ id: fallbackId, marker: found, regimentFile: payloadFallback.symb_name });
+            }catch(e){}
+          }
+        }catch(finalErr){ console.warn('writeFinalMarkerPosition final fallback failed', finalErr); }
+      }
     } else {
       // INSERT новый маркер
       const newId = uuidLocal();
@@ -865,7 +902,8 @@ function setupRealtimeForRoom(){
             markerList.splice(idx,1);
           }
         })
-        .subscribe();
+        .subscribe()
+      .catch(err=>console.warn('markers subscribe err', err));
     }
   }catch(e){ console.warn('markers chan err', e); }
 
@@ -901,7 +939,8 @@ function setupRealtimeForRoom(){
             }
           }catch(e){ console.warn('apply map on rooms update err', e); }
         })
-        .subscribe();
+        .subscribe()
+        .catch(err=>console.warn('rooms subscribe err', err));
     }
   }catch(e){ console.warn('rooms chan err', e); }
 
@@ -913,7 +952,8 @@ function setupRealtimeForRoom(){
         .on('postgres_changes', { event:'*', schema:'public', table:'room_members', filter:`room_id=eq.${CURRENT_ROOM_ID}` }, (payload) => {
           try{ refreshRoomPanel(); }catch(e){}
         })
-        .subscribe();
+        .subscribe()
+        .catch(err=>console.warn('room_members subscribe err', err));
     }
   }catch(e){ console.warn('room_members chan err', e); }
 }
@@ -1463,10 +1503,24 @@ function loadMapByFile(fileName){
   });
 }
 
-$id('btnLoadMap').addEventListener('click', ()=> {
+$id('btnLoadMap').addEventListener('click', async ()=> {
   const sel = mapSelect.value;
   if(!sel) return alert('Выберите карту в списке.');
-  loadMapByFile(sel).catch(err => alert(err.message));
+
+  // локально загружаем карту
+  await loadMapByFile(sel).catch(err => alert(err.message));
+
+  // если игрок в комнате, обновляем поле settings.mapName
+  if (CURRENT_ROOM_ID && supabaseClient) {
+    try {
+      await supabaseClient.from('rooms')
+        .update({ settings: { mapName: sel } })
+        .eq('id', CURRENT_ROOM_ID);
+      console.log('Карта синхронизирована через Supabase:', sel);
+    } catch(e) {
+      console.warn('Ошибка синхронизации карты', e);
+    }
+  }
 });
 
 $id('btnResetMap').addEventListener('click', ()=>{
@@ -1524,7 +1578,10 @@ for(let i=1;i<=5;i++){
 }
 
 //------------ Управление маркерами ------------
-function generateMarkerId(team, idx){ return `${team}-${idx}`; }
+// Не нужно собирать текстовые ID — используем UUID
+function generateMarkerId() {
+  return (crypto && crypto.randomUUID) ? crypto.randomUUID() : 'id-' + Math.random().toString(36).slice(2,9);
+}
 
 function createRegDivIcon(nick, nation, regimentFile, team) {
   const iconUrl = `${ICON_FOLDER}${nation}/${regimentFile}`;
@@ -1545,7 +1602,7 @@ function createRegDivIcon(nick, nation, regimentFile, team) {
   });
 }
 function placeMarker(nick, nation, regimentFile, team, playerIndex){
-  const id = generateMarkerId(team, playerIndex);
+  const id = generateMarkerId(); // теперь UUID
   const existingIndex = markerList.findIndex(m => m.id === id);
   if (existingIndex !== -1) {
     try { map.removeLayer(markerList[existingIndex].marker); } catch(e){}
