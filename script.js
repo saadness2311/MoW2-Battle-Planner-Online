@@ -122,8 +122,14 @@ function ensureAuthAndRoomsContainers(){
 
       const password_hash = pwd ? (typeof bcrypt!=='undefined'?bcrypt.hashSync(pwd,10):pwd) : null;
       const { data, error } = await supabaseClient.from('rooms').insert([{
-        name, password_hash, owner_user_id: Auth.currentUser.id, current_echelon:1, max_players:50, settings:{}
-      }]).select().single();
+  name,
+  password_hash,
+  owner_user_id: Auth.currentUser.id,
+  turn_owner_user_id: Auth.currentUser.id, // <-- назначаем ход создателю сразу
+  current_echelon: 1,
+  max_players: 50,
+  settings: {}
+}]).select().single();
       if (error){ console.error(error); alert('Ошибка создания комнаты'); return; }
 
       await supabaseClient.from('room_members').upsert(
@@ -446,6 +452,20 @@ async function refreshRoomPanel() {
           turnEl.textContent = '—';
         }
       }
+// если поле turn_owner_user_id пусто, и текущий пользователь — создатель комнаты, назначим ход создателю (backfill)
+try {
+  if (room && !room.turn_owner_user_id && room.owner_user_id === Auth.currentUser.id) {
+    await supabaseClient.from('rooms').update({ turn_owner_user_id: room.owner_user_id }).eq('id', CURRENT_ROOM_ID);
+    // обновим локальную переменную/метку (чтобы UI сразу отобразил)
+    const turnLabel = $id('mow2_room_turn_label');
+    if (turnLabel) {
+      const { data: owner } = await supabaseClient.from('users_mow2').select('username').eq('id', room.owner_user_id).limit(1).single();
+      turnLabel.textContent = owner && owner.username ? owner.username : room.owner_user_id;
+    }
+  }
+} catch (e) {
+  console.warn('backfill turn_owner_user_id failed', e);
+}
       // apply map if set and function exists
       try {
         const mapName = room.settings && room.settings.mapName;
