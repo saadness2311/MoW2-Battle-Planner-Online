@@ -826,25 +826,16 @@ async function writeFinalMarkerPosition(markerOrEntry){
 }
 
 // Вызвать при создании маркера локально (если нужно — попытаться записать немедленно, только если у пользователя ход)
-
-
 async function onLocalMarkerCreated(marker){
-  if(!marker) return false;
-  if(!Auth.currentUser) return false;
+  // маркер создаётся локально; сохраняем только если наш ход
+  if(!marker) return;
+  if(!Auth.currentUser) return;
   const haveTurn = await ensureMyTurn();
   if(!haveTurn){
     showToast('Сохранить изменение можно только если у вас ход');
-    try{
-      if(marker && marker.marker && marker.id == null){
-        map.removeLayer(marker.marker);
-      } else if (marker && typeof marker.remove === 'function' && !marker.id){
-        map.removeLayer(marker);
-      }
-    }catch(e){}
-    return false;
+    return;
   }
   await writeFinalMarkerPosition(marker);
-  return true;
 }
 
 // Вызвать на dragend — маркер уже отпущен, записываем финальную позицию
@@ -854,50 +845,35 @@ function onLocalMarkerMoved(marker){
 }
 
 // Подписки Realtime через Supabase v2 channel+postgres_changes
-// Подписки Realtime через Supabase v2 channel+postgres_changes
-// Подписки Realtime через Supabase v2 channel+postgres_changes
 function setupRealtimeForRoom(){
   teardownRealtime();
-  // global rooms list subscription (so new rooms appear without page reload)
-  try {
-    if (supabaseClient && supabaseClient.channel) {
-      try {
-        const roomsGlobal = supabaseClient.channel('rooms-global');
-        roomsGlobal.on('postgres_changes', { event: '*', schema: 'public', table: 'rooms' }, payload => {
-          try { loadRoomsList(); } catch(e){ console.warn('roomsGlobal refresh err', e); }
-        });
-        roomsGlobal.subscribe();
-        _realtimeChannels.push(roomsGlobal);
-        console.log('roomsGlobal subscribed');
-      } catch(e){ console.warn('roomsGlobal subscribe failed', e); }
-    }
-  } catch(e){ console.warn('roomsGlobal chan err', e); }
-
   if(!CURRENT_ROOM_ID) return;
 
   function channelFor(name){
     const topic = `room-${CURRENT_ROOM_ID}-${name}`;
-    const ch = (supabaseClient && supabaseClient.channel) ? supabaseClient.channel(topic) : null;
+    const ch = (supabaseClient.channel ? supabaseClient.channel(topic) : null);
     if(!ch) {
-      console.warn('Realtime not available on supabaseClient for', name);
+      console.warn('Realtime not available on supabaseClient');
       return null;
     }
     _realtimeChannels.push(ch);
     return ch;
   }
 
-  // MARKERS channel
+  // MARKERS
   try{
     const markersChan = channelFor('markers');
     if(markersChan){
       markersChan
         .on('postgres_changes', { event: 'INSERT', schema:'public', table:'markers', filter: `room_id=eq.${CURRENT_ROOM_ID}` }, (payload) => {
           const m = payload.new; if(!m) return;
+          // если уже есть - пропускаем (локально)
           if(typeof markerList !== 'undefined' && markerList.find(mm=>mm.id===m.id)) return;
           try{
             const lat = Number(m.x), lng = Number(m.y);
-            const marker = L.marker([lat,lng], { draggable: false }).addTo(map);
-            setupMarkerHandlers(marker);
+            const marker = L.marker([lat,lng], { draggable: true }).addTo(map);
+            marker.on('dragend', ()=>{ if (typeof onLocalMarkerMoved === 'function') onLocalMarkerMoved(marker); });
+            // сохраняем минимальную инфу
             markerList.push({ id: m.id, marker, regimentFile: m.symb_name, meta: m.meta });
           }catch(e){ console.warn(e); }
         })
@@ -905,13 +881,15 @@ function setupRealtimeForRoom(){
           const m = payload.new; if(!m) return;
           const idx = (typeof markerList!=='undefined') ? markerList.findIndex(mm=>mm.id===m.id) : -1;
           if(idx === -1) {
+            // если нет локально - создаём
             try{
               const lat = Number(m.x), lng = Number(m.y);
-              const marker = L.marker([lat,lng], { draggable: false }).addTo(map);
-              setupMarkerHandlers(marker);
+              const marker = L.marker([lat,lng], { draggable: true }).addTo(map);
+              marker.on('dragend', ()=>{ if (typeof onLocalMarkerMoved === 'function') onLocalMarkerMoved(marker); });
               markerList.push({ id: m.id, marker, regimentFile: m.symb_name, meta: m.meta });
-            }catch(e){ console.warn(e); }
+            }catch(e){}
           } else {
+            // плавная анимация к новой позиции
             const target = [Number(m.x), Number(m.y)];
             try{ animateMarkerTo(markerList[idx].marker, target, 350); }catch(e){ console.warn(e); }
           }
@@ -923,55 +901,59 @@ function setupRealtimeForRoom(){
             try{ map.removeLayer(markerList[idx].marker); }catch(e){}
             markerList.splice(idx,1);
           }
-        });
-      try { markersChan.subscribe(); console.log('markersChan subscribed for', CURRENT_ROOM_ID); } catch(e){ console.warn('markersChan subscribe failed', e); }
+        })
+        .subscribe()
+      .catch(err=>console.warn('markers subscribe err', err));
     }
   }catch(e){ console.warn('markers chan err', e); }
 
-  // ROOMS channel: observe turn_owner_user_id and settings.mapName
+  // ROOMS: observe turn_owner_user_id and settings.mapName
   try{
     const roomsChan = channelFor('rooms');
     if(roomsChan){
       roomsChan
-        .on('postgres_changes', { event:'UPDATE', schema:'public', table:'rooms', filter:`id=eq.${CURRENT_ROOM_ID}` }, async (payload) => {
+        .on('postgres_changes', { event:'UPDATE', schema:'public', table:'rooms', filter:`id=eq.${CURRENT_ROOM_ID}` }, (payload) => {
           const r = payload.new; if(!r) return;
           const turnLabel = document.getElementById('mow2_room_turn_label');
           if(turnLabel){
             if(r.turn_owner_user_id){
-              try{
-                const res = await supabaseClient.from('users_mow2').select('username').eq('id', r.turn_owner_user_id).limit(1).single();
-                turnLabel.textContent = (res && res.data && res.data.username) ? res.data.username : r.turn_owner_user_id;
-              }catch(e){ turnLabel.textContent = r.turn_owner_user_id; }
+              supabaseClient.from('users_mow2').select('username').eq('id', r.turn_owner_user_id).limit(1).single()
+                .then(res => { if(res.data && res.data.username) turnLabel.textContent = res.data.username; else turnLabel.textContent = r.turn_owner_user_id; })
+                .catch(()=> { turnLabel.textContent = r.turn_owner_user_id; });
             } else {
               turnLabel.textContent = '—';
             }
           }
+          // sync map selection if changed
           try{
             const mapName = r.settings && r.settings.mapName;
             if(mapName){
-              if(typeof applyMapFromSettings === 'function') applyMapFromSettings(mapName);
-              else if (typeof window.applyMap === 'function') window.applyMap(mapName);
-              else if (typeof window.setMapByName === 'function') window.setMapByName(mapName);
+              if(typeof applyMapFromSettings === 'function'){
+                applyMapFromSettings(mapName);
+              } else if (typeof window.applyMap === 'function'){
+                window.applyMap(mapName);
+              } else {
+                // optional fallback: if you have a function to set base image tile, call it
+                if (typeof window.setMapByName === 'function') window.setMapByName(mapName);
+              }
             }
           }catch(e){ console.warn('apply map on rooms update err', e); }
-          try{
-            const myTurn = (Auth && Auth.currentUser) ? (r.turn_owner_user_id === Auth.currentUser.id) : false;
-            updateMarkersDraggable(myTurn);
-          }catch(e){ console.warn('updateMarkersDraggable err', e); }
-        });
-      try { roomsChan.subscribe(); console.log('roomsChan subscribed for', CURRENT_ROOM_ID); } catch(e){ console.warn('roomsChan subscribe failed', e); }
+        })
+        .subscribe()
+        .catch(err=>console.warn('rooms subscribe err', err));
     }
   }catch(e){ console.warn('rooms chan err', e); }
 
-  // ROOM_MEMBERS: refresh UI when members change
+  // ROOM_MEMBERS: refresh UI
   try{
     const memChan = channelFor('room_members');
     if(memChan){
       memChan
         .on('postgres_changes', { event:'*', schema:'public', table:'room_members', filter:`room_id=eq.${CURRENT_ROOM_ID}` }, (payload) => {
-          try{ refreshRoomPanel(); }catch(e){ console.warn('refreshRoomPanel failed on room_members change', e); }
-        });
-      try { memChan.subscribe(); console.log('room_members subscribed for', CURRENT_ROOM_ID); } catch(e){ console.warn('room_members subscribe failed', e); }
+          try{ refreshRoomPanel(); }catch(e){}
+        })
+        .subscribe()
+        .catch(err=>console.warn('room_members subscribe err', err));
     }
   }catch(e){ console.warn('room_members chan err', e); }
 }
@@ -1291,11 +1273,7 @@ const drawControl = new L.Control.Draw({
 });
 map.addControl(drawControl);
 
-
-
-map.on(L.Draw.Event.CREATED, async function (e) {
-  const haveTurn = await ensureMyTurn();
-  if(!haveTurn){ showToast('Нельзя рисовать — не ваш ход'); return; }
+map.on(L.Draw.Event.CREATED, function (e) {
   const layer = e.layer;
   if (layer.setStyle) {
     const style = { color: getDrawColor(), weight: getDrawWeight() };
@@ -1308,8 +1286,9 @@ map.on(L.Draw.Event.CREATED, async function (e) {
   if (layer instanceof L.Circle) {
     layer.setStyle && layer.setStyle({ color: getDrawColor(), weight: getDrawWeight() });
   }
-  if(typeof drawnItems !== 'undefined') drawnItems.addLayer(layer);
+  drawnItems.addLayer(layer);
 });
+
 map.on(L.Draw.Event.EDITED, function (e) {});
 map.on(L.Draw.Event.DELETED, function (e) {});
 
@@ -1622,30 +1601,24 @@ function createRegDivIcon(nick, nation, regimentFile, team) {
     iconAnchor: [Math.round(size / 2), Math.round(size / 2)],
   });
 }
-
-
-
-async function placeMarker(nick, nation, regimentFile, team, playerIndex){
-  if (CURRENT_ROOM_ID) {
-    const haveTurn = await ensureMyTurn();
-    if(!haveTurn){ showToast('Поставить маркер можно только в ваш ход'); return; }
-  }
-  const id = uuidLocal();
-  const existingIndex = (typeof markerList!=='undefined') ? markerList.findIndex(m => m.id === id) : -1;
+function placeMarker(nick, nation, regimentFile, team, playerIndex){
+  const id = generateMarkerId(); // теперь UUID
+  const existingIndex = markerList.findIndex(m => m.id === id);
   if (existingIndex !== -1) {
     try { map.removeLayer(markerList[existingIndex].marker); } catch(e){}
     markerList.splice(existingIndex, 1);
   }
   const pos = map.getCenter();
-  const icon = (typeof createRegDivIcon === 'function') ? createRegDivIcon(nick, nation, regimentFile, team) : null;
-  const marker = L.marker(pos, { icon: icon, draggable: false }).addTo(map);
-  setupMarkerHandlers(marker);
+  const icon = createRegDivIcon(nick, nation, regimentFile, team);
+  const marker = L.marker(pos, { icon, draggable: true }).addTo(map);
+  marker.on('dragend', ()=> {
+    // hook to sync position (Part 3 will attach handler)
+    if (typeof onLocalMarkerMoved === 'function') onLocalMarkerMoved(marker);
+  });
   const entry = { id, team, playerIndex, nick, nation, regimentFile, marker };
-  if(typeof markerList==='undefined') markerList = [];
   markerList.push(entry);
-  if (CURRENT_ROOM_ID && typeof onLocalMarkerCreated === 'function') {
-    await onLocalMarkerCreated(entry);
-  }
+  // create in db if in room (Part 3 hook)
+  if (typeof onLocalMarkerCreated === 'function') onLocalMarkerCreated(entry);
 }
 
 //------------ Кнопки готовых символов ------------
@@ -1897,94 +1870,3 @@ function saveMapAsScreenshot() {
   });
 }
 $id('btnSaveImage').addEventListener('click', saveMapAsScreenshot);
-
-
-
-// Centralized marker handlers: attach dragstart/dragend/dblclick behavior
-function setupMarkerHandlers(marker){
-  if(!marker) return;
-
-  // disable dragging by default — real enabling handled by updateMarkersDraggable()
-  try { marker.dragging && marker.dragging.disable(); } catch(e){}
-
-  // remember original position before drag
-  marker.on('dragstart', async function(){
-    try{
-      const ok = await ensureMyTurn();
-      if(!ok){
-        showToast('Нельзя двигать — не ваш ход');
-        try{ marker.dragging.disable(); }catch(e){}
-        setTimeout(()=> {
-          if(marker._origLatLng) try{ marker.setLatLng(marker._origLatLng); }catch(e){}
-        }, 20);
-        return;
-      }
-      marker._origLatLng = marker.getLatLng();
-      try{ marker.dragging && marker.dragging.enable(); }catch(e){}
-    }catch(e){ console.warn('dragstart handler err', e); }
-  });
-
-  // write final position only on dragend
-  marker.on('dragend', function(){
-    try{ marker.dragging && marker.dragging.disable(); }catch(e){}
-    try{ if (typeof onLocalMarkerMoved === 'function') onLocalMarkerMoved(marker); }catch(e){ console.warn(e); }
-  });
-
-  // double-click to delete (requires turn)
-  marker.on('dblclick', async function(){
-    try{
-      const ok = await ensureMyTurn();
-      if(!ok){ showToast('Удалить можно только в свой ход'); return; }
-      if(!confirm('Удалить этот объект?')) return;
-      const entryIdx = (typeof markerList!=='undefined') ? markerList.findIndex(mm=> mm.marker === marker || mm.marker._leaflet_id === marker._leaflet_id) : -1;
-      let id = entryIdx !== -1 ? markerList[entryIdx].id : null;
-      if(id && CURRENT_ROOM_ID){
-        try{
-          await supabaseClient.from('markers').delete().match({ id: id, room_id: CURRENT_ROOM_ID });
-        }catch(e){ console.warn('delete marker db err', e); }
-      }
-      try{ map.removeLayer(marker); }catch(e){}
-      if(entryIdx !== -1) markerList.splice(entryIdx,1);
-    }catch(e){ console.warn('dblclick handler err', e); }
-  });
-}
-
-// Toggle draggable state for all markers (true => enable drag, false => disable)
-function updateMarkersDraggable(enable){
-  try{
-    if(!Array.isArray(markerList)) return;
-    markerList.forEach(m => {
-      try{
-        if(!m || !m.marker) return;
-        if(enable){
-          if(Auth && Auth.currentUser && typeof CURRENT_ROOM_ID !== 'undefined') {
-            m.marker.dragging && m.marker.dragging.enable();
-          } else {
-            m.marker.dragging && m.marker.dragging.disable();
-          }
-        } else {
-          m.marker.dragging && m.marker.dragging.disable();
-        }
-      }catch(e){}
-    });
-  }catch(e){ console.warn('updateMarkersDraggable exception', e); }
-}
-
-
-// Map selection sync helper: if you have map select UI with id 'mow2_map_select' and button 'mow2_map_apply', this will sync selection to room
-(function(){
-  const sel = document.getElementById('mow2_map_select');
-  const btn = document.getElementById('mow2_map_apply');
-  if(!sel || !btn) return;
-  btn.addEventListener('click', async function(){
-    const mapName = sel.value;
-    if(!mapName) return;
-    try{ if(typeof loadMapByFile === 'function') await loadMapByFile(mapName); }catch(e){ console.warn('loadMapByFile err', e); }
-    try{
-      if(CURRENT_ROOM_ID){
-        await supabaseClient.from('rooms').update({ settings: { mapName } }).eq('id', CURRENT_ROOM_ID);
-        console.log('Synced map selection to room:', mapName);
-      }
-    }catch(e){ console.warn('sync map to room err', e); }
-  });
-})();
