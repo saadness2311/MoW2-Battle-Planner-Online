@@ -512,6 +512,7 @@ async function refreshRoomPanel() {
 async function showRoomPanelOnEnter() {
   await initRoomPanel();
   await refreshRoomPanel();
+setupRealtimeForRoom();
   // add a lightweight subscription to room_members/rooms if desired (real-time)
   // e.g. supabaseClient.from(`room_members:room_id=eq.${CURRENT_ROOM_ID}`).on('INSERT', ...).subscribe()
 }
@@ -558,6 +559,239 @@ window.addEventListener('DOMContentLoaded', async () => {
     showAuthScreen();
   }
 });
+
+/* =================== MULTIPLAYER / SUPABASE HOOKS (INSERT AT EOF) ===================
+   Вставь весь этот блок в самый конец script.js (после всего остального).
+   Требует: supabaseClient, Auth, map, markerList, simpleMarkers, currentEchelon, CURRENT_ROOM_ID
+*/
+
+///// helpers
+function debounce(fn, ms){
+  let t;
+  return function(...args){ clearTimeout(t); t = setTimeout(()=>fn.apply(this,args), ms); };
+}
+
+const uuidLocal = () => (crypto && crypto.randomUUID) ? crypto.randomUUID() : ('id-'+Math.random().toString(36).slice(2,9));
+
+let _realtimeSubscriptions = [];
+
+async function ensureMyTurn(){
+  if(!CURRENT_ROOM_ID) return false;
+  if(!Auth.currentUser) return false;
+  try{
+    const { data: room, error } = await supabaseClient.from('rooms').select('turn_owner_user_id').eq('id', CURRENT_ROOM_ID).single();
+    if(error) { console.warn('ensureMyTurn err', error); return false; }
+    return room && room.turn_owner_user_id === Auth.currentUser.id;
+  }catch(e){ console.warn(e); return false; }
+}
+
+// owner-only: set turn to target user id (or null to clear)
+async function requestGiveTurn(targetUserId){
+  if(!CURRENT_ROOM_ID) return false;
+  try{
+    await supabaseClient.from('rooms').update({ turn_owner_user_id: targetUserId }).eq('id', CURRENT_ROOM_ID);
+    return true;
+  }catch(e){ console.warn('giveTurn err', e); return false; }
+}
+
+/* Debounced write of a final position to DB (only when it's the current player's turn) */
+const maybeWriteMarkerPos = debounce(async function(markerOrEntry){
+  if(!CURRENT_ROOM_ID || !Auth.currentUser) return;
+  const haveTurn = await ensureMyTurn();
+  if(!haveTurn) return; // запрещаем писать если не наш ход
+
+  try{
+    let id = null, latlng = null;
+    if(markerOrEntry && markerOrEntry.id && markerOrEntry.marker){
+      id = markerOrEntry.id;
+      latlng = markerOrEntry.marker.getLatLng();
+    } else if (markerOrEntry && typeof markerOrEntry.getLatLng === 'function'){
+      // leaflet marker passed directly — try to find id in markerList
+      latlng = markerOrEntry.getLatLng();
+      const found = markerList.find(m => m.marker === markerOrEntry || m.marker._leaflet_id === markerOrEntry._leaflet_id);
+      if(found) id = found.id;
+    } else if (markerOrEntry && markerOrEntry._symbName && markerOrEntry._leaflet_id){
+      // simple custom icon marker
+      const found = simpleMarkers.find(s => s._leaflet_id === markerOrEntry._leaflet_id || s._leaflet_id === markerOrEntry._leaflet_id);
+      if(found) {
+        latlng = found.getLatLng();
+        // there's no id (we will upsert new id)
+      }
+    }
+    if(!latlng) return;
+
+    // If there is id — update marker; else insert new marker record
+    if(id){
+      await supabaseClient.from('markers').update({
+        x: String(latlng.lat),
+        y: String(latlng.lng),
+        updated_at: new Date().toISOString(),
+        status: 'idle',
+        last_moved_by: Auth.currentUser.id
+      }).eq('id', id).eq('room_id', CURRENT_ROOM_ID);
+    } else {
+      // insert new marker (generate id)
+      const newId = uuidLocal();
+      const payload = {
+        id: newId,
+        room_id: CURRENT_ROOM_ID,
+        echelon: currentEchelon || 1,
+        symb_name: markerOrEntry._symbName || (markerOrEntry._simpleType || null),
+        x: String(latlng.lat),
+        y: String(latlng.lng),
+        rotation: 0,
+        meta: { created_by: Auth.currentUser.id },
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      };
+      await supabaseClient.from('markers').insert([payload]);
+      // also append id locally if we can find and it's a simple marker
+      try{
+        const found = simpleMarkers.find(s => s._leaflet_id === markerOrEntry._leaflet_id);
+        if(found){
+          markerList.push({ id: newId, team: null, playerIndex: null, nick: Auth.currentUser.username, nation: null, regimentFile: payload.symb_name, marker: found });
+        }
+      }catch(e){}
+    }
+  }catch(e){ console.warn('maybeWriteMarkerPos err', e); }
+}, 450);
+
+/* Called from existing map hooks — when code creates a new marker */
+async function onLocalMarkerCreated(marker){
+  if(!marker) return;
+  // only owner-of-turn can persist
+  if(!Auth.currentUser) return;
+  const haveTurn = await ensureMyTurn();
+  if(!haveTurn) {
+    // если не наш ход — не сохраняем, просто локально показываем
+    showToast('Сохранить изменение можно только если у вас ход');
+    return;
+  }
+
+  // decide payload depending on marker shape
+  try{
+    const latlng = (typeof marker.getLatLng === 'function') ? marker.getLatLng() : null;
+    if(!latlng) return;
+    const newId = uuidLocal();
+    const payload = {
+      id: newId,
+      room_id: CURRENT_ROOM_ID,
+      echelon: currentEchelon || 1,
+      symb_name: marker._symbName || (marker._simpleType || null),
+      x: String(latlng.lat),
+      y: String(latlng.lng),
+      rotation: 0,
+      meta: { created_by: Auth.currentUser.id },
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString()
+    };
+    await supabaseClient.from('markers').insert([payload]);
+    // register locally: try to attach id to markerList entry
+    markerList.push({ id: newId, team:null, playerIndex:null, nick:Auth.currentUser.username, nation:null, regimentFile: payload.symb_name, marker });
+    showToast('Маркер сохранён (когда у вас ход)');
+  }catch(e){ console.warn('onLocalMarkerCreated err', e); }
+}
+
+/* Called from existing map hooks — when dragend happens */
+function onLocalMarkerMoved(markerOrEntry){
+  // just debounce a final write; actual movement remains fluid on client
+  maybeWriteMarkerPos(markerOrEntry);
+}
+
+/* Real-time subscriptions: markers, rooms (turn changes), room_members */
+function setupRealtimeForRoom(){
+  // unsubscribe previous if any
+  try{ _realtimeSubscriptions.forEach(s => s.unsubscribe && s.unsubscribe()); }catch(e){}
+  _realtimeSubscriptions = [];
+
+  if(!CURRENT_ROOM_ID) return;
+
+  // markers channel
+  const markersChannel = supabaseClient
+    .from(`markers:room_id=eq.${CURRENT_ROOM_ID}`)
+    .on('INSERT', payload => {
+      const m = payload.new;
+      // avoid duplication: if already exist by id - skip
+      if(markerList.find(mm => mm.id === m.id)) return;
+      try{
+        const lat = parseFloat(m.x), lng = parseFloat(m.y);
+        let marker;
+        if(m.symb_name && ICON_NAMES && ICON_NAMES.includes(m.symb_name)){
+          marker = L.marker([lat,lng], { icon: L.icon({ iconUrl:`assets/symbols/${m.symb_name}.png`, iconSize:[48,48], iconAnchor:[24,24] }), draggable: true }).addTo(map);
+        } else {
+          marker = L.marker([lat,lng], { icon: L.divIcon({ html: (m.meta && m.meta.html) || '', className:'symbol-marker' }), draggable:true }).addTo(map);
+        }
+        marker.on('dragend', ()=> { if (typeof onLocalMarkerMoved === 'function') onLocalMarkerMoved(marker); });
+        markerList.push({ id: m.id, team: m.meta?.team || null, playerIndex: m.meta?.playerIndex || null, nick: m.meta?.nick || null, nation: m.meta?.nation || null, regimentFile: m.symb_name, marker });
+      }catch(e){ console.warn('markers INSERT handler err', e); }
+    })
+    .on('UPDATE', payload => {
+      const m = payload.new;
+      const idx = markerList.findIndex(mm => mm.id === m.id);
+      if(idx !== -1){
+        try{
+          const lat = parseFloat(m.x), lng = parseFloat(m.y);
+          markerList[idx].marker.setLatLng([lat,lng]);
+        }catch(e){ console.warn('markers UPDATE setLatLng', e); }
+      }
+    })
+    .on('DELETE', payload => {
+      const m = payload.old;
+      const idx = markerList.findIndex(mm => mm.id === m.id);
+      if(idx !== -1){
+        try{ map.removeLayer(markerList[idx].marker); }catch(e){}
+        markerList.splice(idx,1);
+      }
+    })
+    .subscribe();
+
+  _realtimeSubscriptions.push(markersChannel);
+
+  // rooms: watch for turn_owner_user_id changes
+  const roomsChan = supabaseClient
+    .from(`rooms:id=eq.${CURRENT_ROOM_ID}`)
+    .on('UPDATE', payload => {
+      const r = payload.new;
+      // update UI label if exists
+      const turnLabel = document.getElementById('mow2_room_turn_label');
+      if(turnLabel){
+        if(r.turn_owner_user_id){
+          // try get username
+          supabaseClient.from('users_mow2').select('username').eq('id', r.turn_owner_user_id).limit(1).single()
+            .then(res => { if(res.data && res.data.username) turnLabel.textContent = res.data.username; else turnLabel.textContent = r.turn_owner_user_id; })
+            .catch(()=> { turnLabel.textContent = r.turn_owner_user_id; });
+        } else {
+          turnLabel.textContent = '—';
+        }
+      }
+    }).subscribe();
+
+  _realtimeSubscriptions.push(roomsChan);
+
+  // room_members: update panel on changes
+  const memChan = supabaseClient
+    .from(`room_members:room_id=eq.${CURRENT_ROOM_ID}`)
+    .on('INSERT', () => refreshRoomPanel())
+    .on('UPDATE', () => refreshRoomPanel())
+    .on('DELETE', () => refreshRoomPanel())
+    .subscribe();
+
+  _realtimeSubscriptions.push(memChan);
+}
+
+/* Utility: call when leaving room to clear subscriptions */
+function teardownRealtime(){
+  try{ _realtimeSubscriptions.forEach(s => s.unsubscribe && s.unsubscribe()); }catch(e){}
+  _realtimeSubscriptions = [];
+}
+
+/* Hook the two global functions (if not overridden) so existing code will call them.
+   If these functions are already defined earlier in file, we don't override them. */
+if (typeof window.onLocalMarkerCreated !== 'function') window.onLocalMarkerCreated = onLocalMarkerCreated;
+if (typeof window.onLocalMarkerMoved !== 'function') window.onLocalMarkerMoved = onLocalMarkerMoved;
+
+/* ===== End of MULTIPLAYER HOOKS ===== */
+
 
 
 // Твой оригинальный script.js — инициализация карты, эшелоны, маркеры, UI, сохранение/загрузка.
