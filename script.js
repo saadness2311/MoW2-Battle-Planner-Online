@@ -3,8 +3,8 @@
 /* --- Supabase и bcrypt --- */
 const supabaseClient = (typeof supabase !== 'undefined' && supabase.createClient)
   ? supabase.createClient(
-      'https://zqklzhipwiifrrbyentg.supabase.co',
-      'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inpxa2x6aGlwd2lpZnJyYnllbnRnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjA5NzQ0ODYsImV4cCI6MjA3NjU1MDQ4Nn0.siMc2xCvoBEjwNVwaOVvjlOtDODs9yDo0IDyGl9uWso'
+      'https://qevtrgxjlditqmgqlgnn.supabase.co',
+      'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFldnRyZ3hqbGRpdHFtZ3FsZ25uIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjIyNDQxNjAsImV4cCI6MjA3NzgyMDE2MH0.1HBbNY8fv-MTQlp6nlzqRYVAKXrHkWAkmEdyKvS-CN4'
     )
   : null;
 
