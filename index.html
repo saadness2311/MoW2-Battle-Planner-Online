@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>MoW Battle Planner — Вход</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body class="centered dark">
+  <div class="auth-container">
+    <h1>MoW Battle Planner Online</h1>
+
+    <section id="register">
+      <h2>Регистрация</h2>
+      <input id="reg-nick" placeholder="Ник (мин. 3)" />
+      <input id="reg-pass" placeholder="Пароль (мин. 1)" type="password" />
+      <button id="btn-register">Зарегистрироваться</button>
+    </section>
+
+    <section id="login">
+      <h2>Вход</h2>
+      <input id="login-nick" placeholder="Ник" />
+      <input id="login-pass" placeholder="Пароль" type="password" />
+      <button id="btn-login">Войти</button>
+    </section>
+
+    <p id="status" class="muted"></p>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js/dist/umd/supabase.min.js"></script>
+  <script src="script_auth.js"></script>
+</body>
+</html>
