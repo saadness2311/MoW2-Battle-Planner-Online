@@ -744,13 +744,12 @@ export default class BattleScene extends Phaser.Scene {
     this.drawings.forEach((g) => rt.draw(g));
     this.units.forEach((s) => rt.draw(s));
 
-    const canvas = rt.canvas;
-    const pngUrl = canvas.toDataURL("image/png");
-
-    const a = document.createElement("a");
-    a.href = pngUrl;
-    a.download = `battle_plan_${Date.now()}.png`;
-    a.click();
+    rt.snapshot((image: HTMLImageElement) => {
+  const a = document.createElement("a");
+  a.href = image.src;
+  a.download = "plan.png";
+  a.click();
+});
 
     rt.destroy();
   }
