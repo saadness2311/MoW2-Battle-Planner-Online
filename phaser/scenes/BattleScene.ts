@@ -218,7 +218,7 @@ export default class BattleScene extends Phaser.Scene {
       if (this.selectedUnits.has(id)) {
         this.unselectUnit(id);
       } else {
-        if (!p.shiftKey) this.clearSelection();
+        if (!p.event.shiftKey) this.clearSelection();
         this.selectUnit(id);
       }
     });
