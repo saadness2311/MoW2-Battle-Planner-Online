@@ -89,7 +89,7 @@ export default class BattleScene extends Phaser.Scene {
   preload() {
     const mapId = this.context.room.current_map_id || "map1";
     this.load.image("map", `/assets/maps/${mapId}.jpg`);
-    this.load.image("unit_default", "/assets/symbols/unit_default.png`);
+    this.load.image("unit_default", "/assets/symbols/unit_default.png");
   }
 
   create() {
