@@ -1,19 +1,21 @@
-import Phaser from "phaser";
-import { supabase } from "@/lib/supabaseClient";
+// phaser/scenes/BattleScene.ts
+import * as Phaser from "phaser";
+import { supabase } from "../../lib/supabaseClient";
 
-type Mow2Context = {
+type DrawingMode = "none" | "front" | "enemy";
+
+type SceneContext = {
   roomId: string;
-  userId: string;
-  nickname: string;
   echelon: number;
-  room: {
-    id: string;
-    current_turn_user_id: string | null;
-    current_map_id: string | null;
-  };
+  canControl: boolean;
+  currentMapId: string;
+  drawingMode: DrawingMode;
+  drawingsVersion: number;
+  selectedSymbol: string | null;
+  ownerSlot: number | null;
 };
 
-type UnitRow = {
+type UnitRecord = {
   id: string;
   room_id: string;
   echelon_index: number;
@@ -22,749 +24,554 @@ type UnitRow = {
   y: number;
   z_index: number;
   symbol_name: string | null;
-  owner_user?: string | null;
-  owner_slot?: number | null;
+  owner_slot: number | null;
 };
 
-type DrawingRow = {
+type DrawingRecord = {
   id: string;
   room_id: string;
   echelon_index: number;
   type: string;
   points: { x: number; y: number }[];
-  style: {
-    color?: number;
-    width?: number;
-    alpha?: number;
-    arrowHead?: boolean;
+  style: any;
+};
+
+// Иконки как в оффлайне
+const ICON_NAMES = [
+  "symb1",
+  "symb2",
+  "symb3",
+  "symb4",
+  "symb5",
+  "symb6",
+  "symb7",
+  "symb8",
+  "symb9",
+  "symb10",
+  "symb11",
+  "symb12",
+  "symb13",
+  "symb14",
+  "symb15",
+  "symb16",
+  "symb17",
+  "symb18",
+  "symb19",
+  "symb20",
+  "symb21",
+  "symb22",
+  "symb23",
+  "symb24",
+  "symb25",
+  "symb26",
+  "symb27",
+  "symb28",
+  "symb29",
+  "symb30",
+  "symb31",
+  "symb32",
+  "symb33",
+  "symb34",
+  "symb35",
+];
+
+// Цвет подсветки по owner_slot:
+// 1–5  → зелёный (синие юниты)
+// 6–10 → красный (красные юниты)
+// остальное — без подсветки
+function getOwnerHaloColor(slot: number | null | undefined): number | null {
+  if (!slot || slot <= 0) return null;
+  if (slot >= 1 && slot <= 5) {
+    return 0x22c55e;
+  }
+  if (slot >= 6 && slot <= 10) {
+    return 0xef4444;
+  }
+  return null;
+}
+
+export class BattleScene extends Phaser.Scene {
+  private ctx: SceneContext = {
+    roomId: "",
+    echelon: 0,
+    canControl: false,
+    currentMapId: "map1",
+    drawingMode: "none",
+    drawingsVersion: 0,
+    selectedSymbol: null,
+    ownerSlot: null,
   };
-};
 
-const Z_LAYERS = {
-  MAP: 0,
-  DRAWINGS: 10,
-  UNITS: 100,
-  MY_UNITS: 200,
-  UI: 1000
-};
+  private mapImage?: Phaser.GameObjects.Image;
 
-export default class BattleScene extends Phaser.Scene {
-  private context!: Mow2Context;
+  private unitSprites: Map<string, Phaser.GameObjects.Image> = new Map();
+  private unitHalos: Map<string, Phaser.GameObjects.Graphics> = new Map();
 
-  private bg?: Phaser.GameObjects.Image;
-
-  private units: Map<string, Phaser.GameObjects.Sprite> = new Map();
-  private unitMeta: Map<string, UnitRow> = new Map();
-
-  private drawings: Map<string, Phaser.GameObjects.Graphics> = new Map();
-
-  private unitsChannel: any;
-  private drawingsChannel: any;
-
-  public drawingMode: string | null = null;
-  private isDrawing = false;
-  private drawPoints: Phaser.Math.Vector2[] = [];
-  private tempGraphics?: Phaser.GameObjects.Graphics;
-
-  public pendingUnitToCreate: any = null;
-  public activeSlot: number = 0;
-
-  private selectedUnits: Set<string> = new Set();
-  private selectionGraphics: Map<string, Phaser.GameObjects.Graphics> =
+  private drawingGraphics: Map<string, Phaser.GameObjects.Graphics> =
     new Map();
+  private currentDrawingGraphics?: Phaser.GameObjects.Graphics;
+  private currentDrawingPoints: { x: number; y: number }[] = [];
+  private isPointerDownForDrawing = false;
 
-  private cursorHint?: Phaser.GameObjects.Text;
+  private pointerDownPos: { x: number; y: number } | null = null;
+  private isDraggingUnit = false;
 
-  private contextMenu?: Phaser.GameObjects.Container;
+  private isReady = false;
 
   constructor() {
     super("BattleScene");
   }
 
-  init() {
-    const game: any = this.game;
-    this.context = game.mow2Context as Mow2Context;
+  public setContextFromReact(partial: Partial<SceneContext>) {
+    const prevEchelon = this.ctx.echelon;
+    const prevMap = this.ctx.currentMapId;
+    const prevDrawingsVersion = this.ctx.drawingsVersion;
+
+    this.ctx = { ...this.ctx, ...partial };
+
+    if (!this.isReady) return;
+
+    if (partial.echelon !== undefined && partial.echelon !== prevEchelon) {
+      this.reloadUnits();
+      this.reloadDrawings();
+    }
+
+    if (
+      partial.currentMapId !== undefined &&
+      partial.currentMapId !== prevMap
+    ) {
+      this.loadNewMapTexture();
+    }
+
+    if (
+      partial.drawingsVersion !== undefined &&
+      partial.drawingsVersion !== prevDrawingsVersion
+    ) {
+      this.reloadDrawings();
+    }
   }
 
   preload() {
-    const mapId = this.context.room.current_map_id || "map1";
-    this.load.image("map", `/assets/maps/${mapId}.jpg`);
-    this.load.image("unit_default", "/assets/symbols/unit_default.png");
-  }
-
-  create() {
-    this.createMap();
-    this.enableCameraControls();
-
-    this.createCursorHint();
-
-    this.loadUnits();
-    this.loadDrawings();
-
-    this.subscribeUnitsRealtime();
-    this.subscribeDrawingsRealtime();
-
-    this.enableInput();
-  }
-
-  private createMap() {
-    this.bg = this.add.image(0, 0, "map").setOrigin(0, 0);
-    this.bg.setDepth(Z_LAYERS.MAP);
-  }
-
-  private enableCameraControls() {
-    const cam = this.cameras.main;
-    cam.setZoom(1);
-    cam.setBounds(0, 0, this.bg!.width, this.bg!.height);
-
-    this.input.on("pointermove", (pointer: Phaser.Input.Pointer) => {
-      if (!pointer.isDown || this.isDrawing || this.pendingUnitToCreate) return;
-      cam.scrollX -= (pointer.x - pointer.prevPosition.x) / cam.zoom;
-      cam.scrollY -= (pointer.y - pointer.prevPosition.y) / cam.zoom;
+    ICON_NAMES.forEach((name) => {
+      this.load.image(name, `/assets/symbols/${name}.png`);
     });
 
-    this.input.on("wheel", (_, __, ___, deltaY) => {
-      const factor = 0.001;
-      cam.zoom = Phaser.Math.Clamp(cam.zoom - deltaY * factor, 0.2, 2.5);
-    });
+    this.load.image("unit_default", "/assets/symbols/symb5.png");
   }
 
-  private createCursorHint() {
-    this.cursorHint = this.add
-      .text(0, 0, "", {
-        fontSize: "12px",
-        color: "#ffffff",
-        backgroundColor: "#00000099"
-      })
-      .setDepth(Z_LAYERS.UI)
-      .setPadding(4, 2, 4, 2)
-      .setVisible(false);
+  async create() {
+    this.cameras.main.setBackgroundColor("#000000");
 
-    this.input.on("pointermove", (pointer: Phaser.Input.Pointer) => {
-      if (!this.cursorHint) return;
-      const worldX = pointer.worldX;
-      const worldY = pointer.worldY;
-      this.cursorHint.setPosition(worldX + 12, worldY + 12);
-    });
+    await this.loadNewMapTexture();
+    this.initInputHandlers();
+
+    await this.reloadUnits();
+    await this.reloadDrawings();
+
+    this.isReady = true;
+    this.game.events.emit("ready");
   }
 
-  private showCursorHint(text: string) {
-    if (!this.cursorHint) return;
-    this.cursorHint.setText(text);
-    this.cursorHint.setVisible(true);
-  }
+  private async loadNewMapTexture() {
+    const texKey = `map_${this.ctx.currentMapId}`;
 
-  private hideCursorHint() {
-    if (!this.cursorHint) return;
-    this.cursorHint.setVisible(false);
-  }
-
-  private async loadUnits() {
-    const { roomId, echelon } = this.context;
-
-    const { data } = await supabase
-      .from("units")
-      .select("*")
-      .eq("room_id", roomId)
-      .eq("echelon_index", echelon);
-
-    this.units.forEach((u) => u.destroy());
-    this.units.clear();
-    this.unitMeta.clear();
-    this.clearSelection();
-
-    (data || []).forEach((row: UnitRow) => {
-      this.spawnUnit(row, true);
-    });
-  }
-
-  private spawnUnit(row: UnitRow, initial = false) {
-    const texture = row.symbol_name || "unit_default";
-
-    const sprite = this.add
-      .sprite(row.x, row.y, texture)
-      .setInteractive({ draggable: true });
-
-    sprite.setDepth(this.depthForUnit(row));
-    sprite.setData("unitId", row.id);
-
-    if (!initial) {
-      sprite.setAlpha(0);
-      sprite.setScale(0.8);
-      this.tweens.add({
-        targets: sprite,
-        alpha: 1,
-        scale: 1,
-        duration: 200,
-        ease: "Sine.easeOut"
+    if (!this.textures.exists(texKey)) {
+      this.load.image(texKey, `/assets/maps/${this.ctx.currentMapId}.jpg`);
+      await new Promise<void>((resolve) => {
+        this.load.once(Phaser.Loader.Events.COMPLETE, () => resolve());
+        this.load.start();
       });
     }
 
-    sprite.on("pointerover", () => {
-      const owner = row.owner_user === this.context.userId ? "мой" : "чужой";
-      const slot = row.owner_slot ?? 0;
-      this.showCursorHint(
-        `${row.type || "юнит"} (${owner}, слот ${slot + 1})`
-      );
-    });
-    sprite.on("pointerout", () => {
-      this.hideCursorHint();
-    });
+    if (this.mapImage) {
+      this.mapImage.destroy();
+    }
 
-    sprite.on("pointerdown", (p: Phaser.Input.Pointer) => {
-      if (p.rightButtonDown()) return;
+    this.mapImage = this.add
+      .image(0, 0, texKey)
+      .setOrigin(0, 0)
+      .setDisplaySize(this.scale.width, this.scale.height);
+  }
 
-      const id = row.id;
-      if (this.selectedUnits.has(id)) {
-        this.unselectUnit(id);
-      } else {
-        if (!p.event.shiftKey) this.clearSelection();
-        this.selectUnit(id);
-      }
+  private async reloadUnits() {
+    this.unitSprites.forEach((sprite) => sprite.destroy());
+    this.unitHalos.forEach((g) => g.destroy());
+    this.unitSprites.clear();
+    this.unitHalos.clear();
+
+    if (!this.ctx.roomId) return;
+
+    const { data, error } = await supabase
+      .from("units")
+      .select(
+        "id, room_id, echelon_index, type, x, y, z_index, symbol_name, owner_slot",
+      )
+      .eq("room_id", this.ctx.roomId)
+      .eq("echelon_index", this.ctx.echelon);
+
+    if (error) {
+      console.error("Ошибка загрузки units:", error);
+      return;
+    }
+
+    const units = (data || []) as UnitRecord[];
+
+    units.forEach((u) => {
+      this.spawnUnitSprite(u);
     });
+  }
 
-    sprite.on("pointerup", (p: Phaser.Input.Pointer) => {
-      if (!p.rightButtonDown()) return;
+  private spawnUnitSprite(u: UnitRecord) {
+    const textureKey = this.resolveUnitTexture(u);
 
-      const id = row.id;
-      const worldX = p.worldX;
-      const worldY = p.worldY;
-      this.openContextMenu(id, worldX, worldY);
-    });
+    const haloColor = getOwnerHaloColor(u.owner_slot);
+    let halo: Phaser.GameObjects.Graphics | undefined;
+
+    if (haloColor !== null) {
+      halo = this.add.graphics();
+      halo.fillStyle(haloColor, 0.22);
+      halo.lineStyle(1, haloColor, 0.5);
+      halo.beginPath();
+      halo.arc(u.x, u.y, 24, 0, Math.PI * 2);
+      halo.closePath();
+      halo.fillPath();
+      halo.strokePath();
+      halo.setDepth((u.z_index || 0) - 1);
+      this.unitHalos.set(u.id, halo);
+    }
+
+    const sprite = this.add
+      .image(u.x, u.y, textureKey)
+      .setOrigin(0.5, 0.5);
+
+    sprite.setDepth(u.z_index || 0);
+    sprite.setInteractive({ draggable: true });
+
+    this.input.setDraggable(sprite, this.ctx.canControl);
 
     sprite.on("dragstart", () => {
-      const id = row.id;
-      if (!this.canControlUnit(row)) return;
-      this.selectUnit(id);
-      sprite.setDepth(Z_LAYERS.MY_UNITS + 100);
+      this.isDraggingUnit = true;
     });
 
-    sprite.on("drag", (_pointer: any, x: number, y: number) => {
-      if (!this.canControlUnit(row)) return;
-      sprite.setPosition(x, y);
-      const g = this.selectionGraphics.get(row.id);
-      if (g) {
-        g.clear();
-        this.drawSelectionRect(g, sprite);
-      }
-    });
+    sprite.on(
+      "drag",
+      (_pointer: Phaser.Input.Pointer, dragX: number, dragY: number) => {
+        sprite.x = dragX;
+        sprite.y = dragY;
 
-    sprite.on("dragend", async () => {
-      if (!this.canControlUnit(row)) return;
-      sprite.setDepth(this.depthForUnit(row));
-
-      await supabase
-        .from("units")
-        .update({ x: sprite.x, y: sprite.y })
-        .eq("id", row.id);
-
-      this.showCursorHint("Юнит перемещён");
-      this.time.delayedCall(800, () => this.hideCursorHint());
-    });
-
-    this.units.set(row.id, sprite);
-    this.unitMeta.set(row.id, row);
-  }
-
-  private depthForUnit(row: UnitRow) {
-    if (row.owner_user === this.context.userId) {
-      return Z_LAYERS.MY_UNITS;
-    }
-    return Z_LAYERS.UNITS;
-  }
-
-  private updateUnit(row: UnitRow) {
-    const s = this.units.get(row.id);
-
-    this.unitMeta.set(row.id, row);
-
-    if (!s) {
-      return this.spawnUnit(row, true);
-    }
-
-    this.tweens.add({
-      targets: s,
-      x: row.x,
-      y: row.y,
-      duration: 200,
-      ease: "Sine.easeOut"
-    });
-
-    s.setDepth(this.depthForUnit(row));
-  }
-
-  private removeUnit(row: UnitRow) {
-    const s = this.units.get(row.id);
-    if (s) s.destroy();
-    this.units.delete(row.id);
-    this.unitMeta.delete(row.id);
-    this.unselectUnit(row.id);
-  }
-
-  private canControlUnit(row: UnitRow): boolean {
-    if (row.owner_user !== this.context.userId) return false;
-    return this.isMyTurn();
-  }
-
-  private selectUnit(id: string) {
-    if (this.selectedUnits.has(id)) return;
-    this.selectedUnits.add(id);
-
-    const sprite = this.units.get(id);
-    if (!sprite) return;
-
-    const g = this.add.graphics();
-    g.setDepth(Z_LAYERS.UI - 1);
-    g.lineStyle(2, 0xffff00, 0.9);
-    this.drawSelectionRect(g, sprite);
-    this.selectionGraphics.set(id, g);
-
-    this.tweens.add({
-      targets: sprite,
-      scale: 1.05,
-      duration: 120,
-      yoyo: true
-    });
-  }
-
-  private unselectUnit(id: string) {
-    this.selectedUnits.delete(id);
-    const g = this.selectionGraphics.get(id);
-    if (g) {
-      g.destroy();
-      this.selectionGraphics.delete(id);
-    }
-  }
-
-  private clearSelection() {
-    this.selectedUnits.forEach((id) => {
-      const g = this.selectionGraphics.get(id);
-      if (g) g.destroy();
-    });
-    this.selectionGraphics.clear();
-    this.selectedUnits.clear();
-  }
-
-  private drawSelectionRect(
-    g: Phaser.GameObjects.Graphics,
-    sprite: Phaser.GameObjects.Sprite
-  ) {
-    const w = sprite.displayWidth;
-    const h = sprite.displayHeight;
-    const x = sprite.x - w / 2;
-    const y = sprite.y - h / 2;
-    g.strokeRect(x - 2, y - 2, w + 4, h + 4);
-  }
-
-  private openContextMenu(unitId: string, worldX: number, worldY: number) {
-    if (this.contextMenu) {
-      this.contextMenu.destroy();
-      this.contextMenu = undefined;
-    }
-
-    const row = this.unitMeta.get(unitId);
-    if (!row) return;
-
-    const isOwner = row.owner_user === this.context.userId;
-
-    const items: { label: string; action: () => void; enabled?: boolean }[] = [
-      {
-        label: "Удалить юнит",
-        action: () => this.deleteUnit(unitId, row),
-        enabled: isOwner && this.isMyTurn()
+        const haloObj = this.unitHalos.get(u.id);
+        if (haloObj) {
+          haloObj.clear();
+          const c = getOwnerHaloColor(u.owner_slot);
+          if (c !== null) {
+            haloObj.fillStyle(c, 0.22);
+            haloObj.lineStyle(1, c, 0.5);
+            haloObj.beginPath();
+            haloObj.arc(dragX, dragY, 24, 0, Math.PI * 2);
+            haloObj.closePath();
+            haloObj.fillPath();
+            haloObj.strokePath();
+          }
+        }
       },
-      {
-        label: "Отметить (жёлтый)",
-        action: () => this.markUnit(unitId, 0xffff66),
-        enabled: isOwner
-      },
-      {
-        label: "Снять отметку",
-        action: () => this.markUnit(unitId, 0xffffff),
-        enabled: isOwner
-      }
-    ];
-
-    const container = this.add.container(worldX, worldY);
-    const bg = this.add.rectangle(0, 0, 150, items.length * 18 + 8, 0x000000, 0.8);
-    bg.setOrigin(0, 0);
-
-    const texts: Phaser.GameObjects.Text[] = [];
-
-    items.forEach((item, index) => {
-      const y = 4 + index * 18;
-      const t = this.add
-        .text(4, y, item.label, {
-          fontSize: "12px",
-          color: item.enabled === false ? "#666666" : "#ffffff"
-        })
-        .setInteractive({ useHandCursor: item.enabled !== false });
-
-      if (item.enabled !== false) {
-        t.on("pointerdown", () => {
-          item.action();
-          this.closeContextMenu();
-        });
-      }
-
-      texts.push(t);
-    });
-
-    container.add(bg);
-    texts.forEach((t) => container.add(t));
-
-    container.setDepth(Z_LAYERS.UI);
-    this.contextMenu = container;
-
-    this.input.once("pointerdown", () => {
-      this.closeContextMenu();
-    });
-  }
-
-  private closeContextMenu() {
-    if (this.contextMenu) {
-      this.contextMenu.destroy();
-      this.contextMenu = undefined;
-    }
-  }
-
-  private async deleteUnit(unitId: string, row: UnitRow) {
-    if (!this.canControlUnit(row)) return;
-    await supabase.from("units").delete().eq("id", unitId);
-  }
-
-  private markUnit(unitId: string, color: number) {
-    const sprite = this.units.get(unitId);
-    if (!sprite) return;
-    sprite.setTint(color);
-  }
-
-  private subscribeUnitsRealtime() {
-    const { roomId } = this.context;
-
-    this.unitsChannel = supabase
-      .channel(`units_${roomId}`)
-      .on(
-        "postgres_changes",
-        {
-          event: "*",
-          schema: "public",
-          table: "units",
-          filter: `room_id=eq.${roomId}`
-        },
-        (payload) => {
-          const newRow = payload.new as UnitRow;
-          const oldRow = payload.old as UnitRow;
-
-          const echelon = this.context.echelon;
-          if (payload.eventType === "INSERT" || payload.eventType === "UPDATE") {
-            if (newRow.echelon_index !== echelon) return;
-          }
-          if (payload.eventType === "DELETE") {
-            if (oldRow.echelon_index !== echelon) return;
-          }
-
-          if (payload.eventType === "INSERT") this.spawnUnit(newRow);
-          if (payload.eventType === "UPDATE") this.updateUnit(newRow);
-          if (payload.eventType === "DELETE") this.removeUnit(oldRow);
-        }
-      )
-      .subscribe();
-  }
-
-  private async loadDrawings() {
-    const { roomId, echelon } = this.context;
-
-    const { data } = await supabase
-      .from("drawings")
-      .select("*")
-      .eq("room_id", roomId)
-      .eq("echelon_index", echelon);
-
-    this.clearLocalDrawings();
-
-    (data || []).forEach((row: DrawingRow) => {
-      this.renderDrawing(row);
-    });
-  }
-
-  private clearLocalDrawings() {
-    this.drawings.forEach((g) => g.destroy());
-    this.drawings.clear();
-  }
-
-  private renderDrawing(row: DrawingRow) {
-    const g = this.add.graphics();
-    g.setDepth(Z_LAYERS.DRAWINGS);
-
-    const color = row.style?.color ?? 0xff0000;
-    const width = row.style?.width ?? 3;
-    const alpha = row.style?.alpha ?? 1;
-
-    g.lineStyle(width, color, alpha);
-
-    const pts = row.points;
-    if (!pts || pts.length < 2) return;
-
-    if (row.type === "line" || row.type === "free") {
-      g.beginPath();
-      g.moveTo(pts[0].x, pts[0].y);
-      for (let i = 1; i < pts.length; i++) g.lineTo(pts[i].x, pts[i].y);
-      g.strokePath();
-    }
-
-    if (row.type === "arrow") {
-      g.beginPath();
-      g.moveTo(pts[0].x, pts[0].y);
-      for (let i = 1; i < pts.length; i++) g.lineTo(pts[i].x, pts[i].y);
-      g.strokePath();
-
-      const end = pts[pts.length - 1];
-      const prev = pts[pts.length - 2];
-      const angle = Math.atan2(end.y - prev.y, end.x - prev.x);
-      const headLen = 14;
-
-      g.beginPath();
-      g.moveTo(end.x, end.y);
-      g.lineTo(
-        end.x - headLen * Math.cos(angle - Math.PI / 6),
-        end.y - headLen * Math.sin(angle - Math.PI / 6)
-      );
-      g.moveTo(end.x, end.y);
-      g.lineTo(
-        end.x - headLen * Math.cos(angle + Math.PI / 6),
-        end.y - headLen * Math.sin(angle + Math.PI / 6)
-      );
-      g.strokePath();
-    }
-
-    if (row.type === "circle") {
-      const a = pts[0];
-      const b = pts[pts.length - 1];
-      const r = Phaser.Math.Distance.Between(a.x, a.y, b.x, b.y);
-      g.strokeCircle(a.x, a.y, r);
-    }
-
-    if (row.type === "polygon") {
-      g.beginPath();
-      g.moveTo(pts[0].x, pts[0].y);
-      for (let i = 1; i < pts.length; i++) g.lineTo(pts[i].x, pts[i].y);
-      g.closePath();
-      g.strokePath();
-    }
-
-    this.drawings.set(row.id, g);
-  }
-
-  private subscribeDrawingsRealtime() {
-    const { roomId } = this.context;
-
-    this.drawingsChannel = supabase
-      .channel(`drawings_${roomId}`)
-      .on(
-        "postgres_changes",
-        {
-          event: "*",
-          schema: "public",
-          table: "drawings",
-          filter: `room_id=eq.${roomId}`
-        },
-        (payload) => {
-          const newRow = payload.new as DrawingRow;
-          const oldRow = payload.old as DrawingRow;
-
-          const echelon = this.context.echelon;
-          if (payload.eventType === "INSERT" || payload.eventType === "UPDATE") {
-            if (newRow.echelon_index !== echelon) return;
-          }
-          if (payload.eventType === "DELETE") {
-            if (oldRow.echelon_index !== echelon) return;
-          }
-
-          if (payload.eventType === "INSERT") this.renderDrawing(newRow);
-          if (payload.eventType === "DELETE") {
-            const g = this.drawings.get(oldRow.id);
-            if (g) g.destroy();
-            this.drawings.delete(oldRow.id);
-          }
-        }
-      )
-      .subscribe();
-  }
-
-  private enableInput() {
-    this.input.on("pointerdown", async (p: Phaser.Input.Pointer) => {
-      if (this.contextMenu) {
-        this.closeContextMenu();
-      }
-
-      if (this.pendingUnitToCreate && this.isMyTurn()) {
-        const u = this.pendingUnitToCreate;
-
-        await supabase.from("units").insert({
-          room_id: this.context.roomId,
-          echelon_index: this.context.echelon,
-          type: u.id,
-          x: p.worldX,
-          y: p.worldY,
-          z_index: Date.now(),
-          symbol_name: u.icon,
-          owner_user: this.context.userId,
-          owner_slot: this.activeSlot ?? 0
-        });
-
-        this.pendingUnitToCreate = null;
-        this.showCursorHint("Юнит создан");
-        this.time.delayedCall(800, () => this.hideCursorHint());
-        return;
-      }
-
-      if (this.drawingMode && this.isMyTurn()) {
-        this.isDrawing = true;
-        this.drawPoints = [
-          new Phaser.Math.Vector2(p.worldX, p.worldY)
-        ];
-        this.tempGraphics = this.add.graphics();
-        this.tempGraphics.setDepth(Z_LAYERS.UI - 2);
-        return;
-      }
-    });
-
-    this.input.on("pointermove", (p: Phaser.Input.Pointer) => {
-      if (!this.isDrawing || !this.tempGraphics || !this.drawingMode) return;
-
-      const pt = new Phaser.Math.Vector2(p.worldX, p.worldY);
-      this.drawPoints.push(pt);
-
-      this.tempGraphics.clear();
-      const color = 0xff0000;
-      const width = 3;
-
-      this.tempGraphics.lineStyle(width, color, 1);
-
-      if (
-        this.drawingMode === "line" ||
-        this.drawingMode === "free" ||
-        this.drawingMode === "arrow"
-      ) {
-        this.tempGraphics.beginPath();
-        this.tempGraphics.moveTo(this.drawPoints[0].x, this.drawPoints[0].y);
-        for (let i = 1; i < this.drawPoints.length; i++) {
-          this.tempGraphics.lineTo(this.drawPoints[i].x, this.drawPoints[i].y);
-        }
-        this.tempGraphics.strokePath();
-      }
-
-      if (this.drawingMode === "circle" && this.drawPoints.length >= 2) {
-        const a = this.drawPoints[0];
-        const b = this.drawPoints[this.drawPoints.length - 1];
-        const r = Phaser.Math.Distance.Between(a.x, a.y, b.x, b.y);
-        this.tempGraphics.strokeCircle(a.x, a.y, r);
-      }
-    });
-
-    this.input.on("pointerup", async () => {
-      if (!this.isDrawing || !this.drawingMode) return;
-
-      this.isDrawing = false;
-
-      if (this.tempGraphics) {
-        this.tempGraphics.destroy();
-        this.tempGraphics = undefined;
-      }
-
-      if (this.drawPoints.length < 2) {
-        this.drawPoints = [];
-        return;
-      }
-
-      const drawingRow = {
-        room_id: this.context.roomId,
-        echelon_index: this.context.echelon,
-        type: this.drawingMode,
-        points: this.drawPoints.map((p) => ({ x: p.x, y: p.y })),
-        style: {
-          color: 0xff0000,
-          width: 3,
-          alpha: 1,
-          arrowHead: this.drawingMode === "arrow"
-        }
-      };
-
-      await supabase.from("drawings").insert(drawingRow);
-
-      this.drawPoints = [];
-
-      this.showCursorHint("Фронт нанесён");
-      this.time.delayedCall(1000, () => this.hideCursorHint());
-    });
-  }
-
-  private isMyTurn() {
-    return this.context.room.current_turn_user_id === this.context.userId;
-  }
-
-  public async handleExternalUpdate({
-    echelon,
-    room
-  }: {
-    echelon?: number;
-    room?: any;
-  }) {
-    if (typeof echelon === "number") {
-      this.context.echelon = echelon;
-      await this.loadUnits();
-      await this.loadDrawings();
-    }
-    if (room) {
-      this.context.room = {
-        ...this.context.room,
-        ...room
-      };
-    }
-  }
-
-  public exportSceneAsPNG() {
-    const cam = this.cameras.main;
-
-    const width = this.bg ? this.bg.width : cam.width;
-    const height = this.bg ? this.bg.height : cam.height;
-
-    const rt = this.make.renderTexture(
-      {
-        x: 0,
-        y: 0,
-        width,
-        height
-      },
-      false
     );
 
-    if (this.bg) rt.draw(this.bg);
-    this.drawings.forEach((g) => rt.draw(g));
-    this.units.forEach((s) => rt.draw(s));
+    sprite.on("dragend", async () => {
+      const newX = sprite.x;
+      const newY = sprite.y;
+      this.isDraggingUnit = false;
 
-    rt.snapshot((image: HTMLImageElement) => {
-  const a = document.createElement("a");
-  a.href = image.src;
-  a.download = "plan.png";
-  a.click();
-});
+      if (!this.ctx.canControl) {
+        return;
+      }
 
-    rt.destroy();
+      const { error } = await supabase
+        .from("units")
+        .update({
+          x: newX,
+          y: newY,
+          z_index: sprite.depth ?? 0,
+        })
+        .eq("id", u.id);
+
+      if (error) {
+        console.error("Ошибка обновления позиции юнита:", error);
+      }
+    });
+
+    this.unitSprites.set(u.id, sprite);
   }
 
-  private shutdown() {
-    if (this.unitsChannel) supabase.removeChannel(this.unitsChannel);
-    if (this.drawingsChannel) supabase.removeChannel(this.drawingsChannel);
-    this.units.forEach((u) => u.destroy());
-    this.drawings.forEach((d) => d.destroy());
-    this.clearSelection();
+  private resolveUnitTexture(u: UnitRecord): string {
+    if (u.symbol_name && this.textures.exists(u.symbol_name)) {
+      return u.symbol_name;
+    }
+    if (this.textures.exists("unit_default")) {
+      return "unit_default";
+    }
+    return ICON_NAMES[4] || "symb5";
   }
 
-  destroy() {
-    this.shutdown();
-    // @ts-ignore
-    super.destroy();
+  private async createUnitAt(x: number, y: number) {
+    if (!this.ctx.roomId) return;
+    if (!this.ctx.selectedSymbol) return;
+
+    const payload = {
+      room_id: this.ctx.roomId,
+      echelon_index: this.ctx.echelon,
+      type: "symbol",
+      x,
+      y,
+      z_index: Date.now(),
+      symbol_name: this.ctx.selectedSymbol,
+      owner_slot: this.ctx.ownerSlot ?? 0,
+    };
+
+    const { data, error } = await supabase
+      .from("units")
+      .insert(payload)
+      .select(
+        "id, room_id, echelon_index, type, x, y, z_index, symbol_name, owner_slot",
+      )
+      .single();
+
+    if (error) {
+      console.error("Ошибка создания юнита:", error);
+      return;
+    }
+
+    const rec = data as UnitRecord;
+    this.spawnUnitSprite(rec);
+  }
+
+  private async reloadDrawings() {
+    this.drawingGraphics.forEach((g) => g.destroy());
+    this.drawingGraphics.clear();
+
+    if (!this.ctx.roomId) return;
+
+    const { data, error } = await supabase
+      .from("drawings")
+      .select("id, room_id, echelon_index, type, points, style")
+      .eq("room_id", this.ctx.roomId)
+      .eq("echelon_index", this.ctx.echelon);
+
+    if (error) {
+      console.error("Ошибка загрузки drawings:", error);
+      return;
+    }
+
+    const drawings = (data || []) as any[];
+
+    drawings.forEach((raw) => {
+      const rec: DrawingRecord = {
+        id: raw.id,
+        room_id: raw.room_id,
+        echelon_index: raw.echelon_index,
+        type: raw.type,
+        points: raw.points || [],
+        style: raw.style,
+      };
+      this.drawStoredDrawing(rec);
+    });
+  }
+
+  private drawStoredDrawing(rec: DrawingRecord) {
+    if (!rec.points || rec.points.length < 2) return;
+
+    const g = this.add.graphics();
+    const color = 0xff0000;
+    const alpha = 1;
+
+    if (rec.type === "front_line") {
+      g.lineStyle(2, color, alpha);
+      g.beginPath();
+      g.moveTo(rec.points[0].x, rec.points[0].y);
+      for (let i = 1; i < rec.points.length; i++) {
+        g.lineTo(rec.points[i].x, rec.points[i].y);
+      }
+      g.strokePath();
+    } else if (rec.type === "enemy_area") {
+      g.lineStyle(1, color, 0.8);
+      g.fillStyle(color, 0.15);
+      g.beginPath();
+      g.moveTo(rec.points[0].x, rec.points[0].y);
+      for (let i = 1; i < rec.points.length; i++) {
+        g.lineTo(rec.points[i].x, rec.points[i].y);
+      }
+      g.closePath();
+      g.fillPath();
+      g.strokePath();
+    }
+
+    this.drawingGraphics.set(rec.id, g);
+  }
+
+  private redrawCurrentDrawing() {
+    if (!this.currentDrawingGraphics || this.currentDrawingPoints.length < 2)
+      return;
+
+    const g = this.currentDrawingGraphics;
+    g.clear();
+
+    const color = 0xff0000;
+
+    if (this.ctx.drawingMode === "front") {
+      g.lineStyle(2, color, 1);
+      g.beginPath();
+      g.moveTo(this.currentDrawingPoints[0].x, this.currentDrawingPoints[0].y);
+      for (let i = 1; i < this.currentDrawingPoints.length; i++) {
+        g.lineTo(this.currentDrawingPoints[i].x, this.currentDrawingPoints[i].y);
+      }
+      g.strokePath();
+    } else if (this.ctx.drawingMode === "enemy") {
+      g.lineStyle(1, color, 0.9);
+      g.fillStyle(color, 0.15);
+      g.beginPath();
+      g.moveTo(this.currentDrawingPoints[0].x, this.currentDrawingPoints[0].y);
+      for (let i = 1; i < this.currentDrawingPoints.length; i++) {
+        g.lineTo(this.currentDrawingPoints[i].x, this.currentDrawingPoints[i].y);
+      }
+      g.closePath();
+      g.fillPath();
+      g.strokePath();
+    }
+  }
+
+  private initInputHandlers() {
+    this.input.on(
+      "pointerdown",
+      (pointer: Phaser.Input.Pointer) => {
+        if (!this.ctx.canControl) return;
+
+        if (this.ctx.drawingMode !== "none") {
+          if (pointer.rightButtonDown()) return;
+
+          this.isPointerDownForDrawing = true;
+          this.currentDrawingPoints = [{ x: pointer.x, y: pointer.y }];
+
+          if (this.currentDrawingGraphics) {
+            this.currentDrawingGraphics.destroy();
+          }
+          this.currentDrawingGraphics = this.add.graphics();
+        } else {
+          if (pointer.rightButtonDown()) return;
+          this.pointerDownPos = { x: pointer.x, y: pointer.y };
+        }
+      },
+      this,
+    );
+
+    this.input.on(
+      "pointermove",
+      (pointer: Phaser.Input.Pointer) => {
+        if (!this.ctx.canControl) return;
+
+        if (this.ctx.drawingMode !== "none") {
+          if (!this.isPointerDownForDrawing) return;
+          if (!this.currentDrawingGraphics) return;
+
+          const last =
+            this.currentDrawingPoints[
+              this.currentDrawingPoints.length - 1
+            ];
+          const dx = pointer.x - last.x;
+          const dy = pointer.y - last.y;
+          if (dx * dx + dy * dy < 4) return;
+
+          this.currentDrawingPoints.push({ x: pointer.x, y: pointer.y });
+          this.redrawCurrentDrawing();
+        }
+      },
+      this,
+    );
+
+    this.input.on(
+      "pointerup",
+      async (pointer: Phaser.Input.Pointer) => {
+        if (!this.ctx.canControl) {
+          this.isPointerDownForDrawing = false;
+          this.pointerDownPos = null;
+          return;
+        }
+
+        if (this.ctx.drawingMode !== "none") {
+          if (!this.isPointerDownForDrawing) return;
+
+          this.isPointerDownForDrawing = false;
+
+          if (
+            !this.ctx.roomId ||
+            this.currentDrawingPoints.length < 2
+          ) {
+            if (this.currentDrawingGraphics) {
+              this.currentDrawingGraphics.destroy();
+              this.currentDrawingGraphics = undefined;
+            }
+            this.currentDrawingPoints = [];
+            return;
+          }
+
+          const type =
+            this.ctx.drawingMode === "front"
+              ? "front_line"
+              : "enemy_area";
+
+          const payload = {
+            room_id: this.ctx.roomId,
+            echelon_index: this.ctx.echelon,
+            type,
+            points: this.currentDrawingPoints,
+            style: {
+              color: "#ff0000",
+              width: 2,
+              fill: this.ctx.drawingMode === "enemy",
+            },
+          };
+
+          const { data, error } = await supabase
+            .from("drawings")
+            .insert(payload)
+            .select("id")
+            .single();
+
+          if (error) {
+            console.error("Ошибка сохранения рисунка:", error);
+            if (this.currentDrawingGraphics) {
+              this.currentDrawingGraphics.destroy();
+              this.currentDrawingGraphics = undefined;
+            }
+          } else {
+            const id = (data as any).id as string;
+            if (this.currentDrawingGraphics) {
+              this.drawingGraphics.set(id, this.currentDrawingGraphics);
+              this.currentDrawingGraphics = undefined;
+            }
+          }
+
+          this.currentDrawingPoints = [];
+          return;
+        }
+
+        if (!this.pointerDownPos) return;
+
+        const dx = pointer.x - this.pointerDownPos.x;
+        const dy = pointer.y - this.pointerDownPos.y;
+        const dist2 = dx * dx + dy * dy;
+
+        this.pointerDownPos = null;
+
+        if (this.isDraggingUnit) {
+          this.isDraggingUnit = false;
+          return;
+        }
+
+        if (!this.ctx.selectedSymbol) return;
+        if (dist2 > 16) return;
+
+        await this.createUnitAt(pointer.x, pointer.y);
+      },
+      this,
+    );
   }
 }
