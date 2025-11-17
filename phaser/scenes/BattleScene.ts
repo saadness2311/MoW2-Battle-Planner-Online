@@ -575,3 +575,5 @@ export class BattleScene extends Phaser.Scene {
     );
   }
 }
+
+export default BattleScene;
