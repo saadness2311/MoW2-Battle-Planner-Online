@@ -16,5 +16,5 @@ export default function RoomPage() {
     return null;
   }
 
-  return <RoomLayout roomId={roomId} session={session} />;
+  return <RoomLayout roomId={roomId} />;
 }
