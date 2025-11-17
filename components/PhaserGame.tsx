@@ -1,111 +1,110 @@
+// components/PhaserGame.tsx
 "use client";
 
 import { useEffect, useRef } from "react";
-import Phaser from "phaser";
-import { createPhaserConfig } from "@/phaser/config";
-import { Session } from "@/lib/auth";
-import { Room } from "@/lib/types";
+import * as Phaser from "phaser";
+import { BattleScene } from "@/phaser/scenes/BattleScene";
+import type { DrawingMode } from "./RoomLayout";
 
-interface PhaserGameProps {
+type PhaserGameProps = {
   roomId: string;
-  session: Session;
-  echelon: number;
-  room: Room;
-}
+  currentEchelon: number;
+  canControl: boolean;
+  currentMapId: string;
+  drawingMode: DrawingMode;
+  drawingsVersion: number;
+  selectedSymbol: string | null;
+  ownerSlot: number | null;
+};
 
 export default function PhaserGame({
   roomId,
-  session,
-  echelon,
-  room
+  currentEchelon,
+  canControl,
+  currentMapId,
+  drawingMode,
+  drawingsVersion,
+  selectedSymbol,
+  ownerSlot,
 }: PhaserGameProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const gameRef = useRef<Phaser.Game | null>(null);
 
   useEffect(() => {
+    if (typeof window === "undefined") return;
     if (!containerRef.current) return;
     if (gameRef.current) return;
 
-    const config = createPhaserConfig(containerRef.current);
-    const game = new Phaser.Game(config);
+    const width = containerRef.current.clientWidth;
+    const height = containerRef.current.clientHeight;
 
-    (game as any).mow2Context = {
-      roomId,
-      userId: session.userId,
-      nickname: session.nickname,
-      echelon,
-      room
+    const config: Phaser.Types.Core.GameConfig = {
+      type: Phaser.AUTO,
+      width,
+      height,
+      parent: containerRef.current,
+      backgroundColor: "#000000",
+      physics: {
+        default: "arcade",
+        arcade: { debug: false },
+      },
+      scene: [BattleScene],
     };
 
+    const game = new Phaser.Game(config);
     gameRef.current = game;
 
-    const exportHandler = () => {
-      const g: any = gameRef.current;
-      if (!g) return;
-      if (g.scene.isActive("BattleScene")) {
-        const scene = g.scene.getScene("BattleScene") as any;
-        if (typeof scene.exportSceneAsPNG === "function") {
-          scene.exportSceneAsPNG();
-        }
+    game.events.once("ready", () => {
+      const anyGame = game as any;
+      const scene = anyGame.scene.keys["BattleScene"] as BattleScene | undefined;
+      if (scene && typeof scene.setContextFromReact === "function") {
+        scene.setContextFromReact({
+          roomId,
+          echelon: currentEchelon,
+          canControl,
+          currentMapId,
+          drawingMode,
+          drawingsVersion,
+          selectedSymbol,
+          ownerSlot,
+        });
       }
-    };
-
-    const drawModeHandler = (e: any) => {
-      const g: any = gameRef.current;
-      if (!g) return;
-      if (g.scene.isActive("BattleScene")) {
-        const scene = g.scene.getScene("BattleScene") as any;
-        scene.drawingMode = e.detail;
-      }
-    };
-
-    const createUnitHandler = (e: any) => {
-      const g: any = gameRef.current;
-      if (!g) return;
-      if (g.scene.isActive("BattleScene")) {
-        const scene = g.scene.getScene("BattleScene") as any;
-        scene.pendingUnitToCreate = e.detail;
-      }
-    };
-
-    const activeSlotHandler = (e: any) => {
-      const g: any = gameRef.current;
-      if (!g) return;
-      if (g.scene.isActive("BattleScene")) {
-        const scene = g.scene.getScene("BattleScene") as any;
-        scene.activeSlot = e.detail;
-      }
-    };
-
-    window.addEventListener("EXPORT_MAP", exportHandler);
-    window.addEventListener("SET_DRAW_MODE", drawModeHandler);
-    window.addEventListener("SET_CREATE_UNIT", createUnitHandler);
-    window.addEventListener("SET_ACTIVE_SLOT", activeSlotHandler);
+    });
 
     return () => {
-      window.removeEventListener("EXPORT_MAP", exportHandler);
-      window.removeEventListener("SET_DRAW_MODE", drawModeHandler);
-      window.removeEventListener("SET_CREATE_UNIT", createUnitHandler);
-      window.removeEventListener("SET_ACTIVE_SLOT", activeSlotHandler);
-
       game.destroy(true);
       gameRef.current = null;
     };
-  }, []);
+  }, [roomId]);
 
   useEffect(() => {
-    const g: any = gameRef.current;
-    if (!g || !g.mow2Context) return;
-    g.mow2Context.echelon = echelon;
-    g.mow2Context.room = room;
+    const game = gameRef.current;
+    if (!game) return;
 
-    if (g.scene.isActive("BattleScene")) {
-      const scene = g.scene.getScene("BattleScene") as any;
-      if (typeof scene.handleExternalUpdate === "function") {
-        scene.handleExternalUpdate({ echelon, room });
-      }
+    const anyGame = game as any;
+    const scene = anyGame.scene.keys["BattleScene"] as BattleScene | undefined;
+    if (scene && typeof scene.setContextFromReact === "function") {
+      scene.setContextFromReact({
+        roomId,
+        echelon: currentEchelon,
+        canControl,
+        currentMapId,
+        drawingMode,
+        drawingsVersion,
+        selectedSymbol,
+        ownerSlot,
+      });
     }
-  }, [echelon, room]);
+  }, [
+    roomId,
+    currentEchelon,
+    canControl,
+    currentMapId,
+    drawingMode,
+    drawingsVersion,
+    selectedSymbol,
+    ownerSlot,
+  ]);
 
   return <div ref={containerRef} className="w-full h-full" />;
 }
