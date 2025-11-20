@@ -365,7 +365,7 @@ export default function RoomLayout({ roomId }: RoomLayoutProps) {
 
         {logsOpen && (
           <div className="absolute left-2 bottom-2 z-30">
-            <LogsPanel />
+            <LogsPanel roomId={room.id} />
           </div>
         )}
       </main>
