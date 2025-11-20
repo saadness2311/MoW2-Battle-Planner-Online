@@ -1,26 +1,28 @@
 -- Supabase schema for MoW Battle Planner Online
--- This script creates all entities, constraints and RLS policies described in the brief.
+-- Creates tables, constraints, triggers and RLS policies for nickname-first auth
+-- and multiplayer room synchronization.
 
--- Enable pgcrypto for UUID generation if not enabled
+-- Extensions ---------------------------------------------------------------
 create extension if not exists "uuid-ossp";
 create extension if not exists pgcrypto;
 
--- USERS / PROFILES -------------------------------------------------------
--- Supabase Auth stores users in auth.users. We keep a profile row with a unique nickname
--- and an optional role (creator / admin). Nickname is the only user-facing identifier.
+-- USERS / PROFILES ---------------------------------------------------------
+-- Profiles mirror auth.users. Nickname is unique and user-facing; auth_email is
+-- used internally for Supabase auth flows.
 create table if not exists public.profiles (
-  id uuid primary key references auth.users (id) on delete cascade,
+  id uuid primary key references auth.users(id) on delete cascade,
   nickname text not null unique check (char_length(nickname) >= 3),
   auth_email text not null unique,
   role text not null default 'player',
   created_at timestamptz not null default now()
 );
 
--- Automatically create a profile row whenever a new auth user is created.
+-- Auto-insert profile rows when auth.users are created.
 create or replace function public.handle_new_user()
 returns trigger
 language plpgsql
-security definer set search_path = public
+security definer
+set search_path = public
 as $$
 begin
   insert into public.profiles (id, nickname, auth_email)
@@ -41,7 +43,7 @@ for each row execute procedure public.handle_new_user();
 
 alter table public.profiles enable row level security;
 
-create policy "Users can see all profiles" on public.profiles
+create policy "Profiles are readable when authenticated" on public.profiles
   for select using (auth.role() = 'authenticated');
 
 create policy "Insert own profile" on public.profiles
@@ -50,7 +52,7 @@ create policy "Insert own profile" on public.profiles
 create policy "Update own profile" on public.profiles
   for update using (auth.uid() = id);
 
--- Allow nickname -> auth_email lookup through a definer function for unauthenticated clients
+-- Definer helper to resolve hidden auth email by nickname (used by client RPC)
 create or replace function public.auth_email_for_nickname(p_nickname text)
 returns text
 language sql
@@ -62,15 +64,15 @@ $$;
 
 grant execute on function public.auth_email_for_nickname(text) to anon, authenticated;
 
--- ROOMS ------------------------------------------------------------------
+-- ROOMS --------------------------------------------------------------------
 create table if not exists public.rooms (
   id uuid primary key default gen_random_uuid(),
   name text not null unique,
   description text,
   password_hash text,
-  owner_id uuid not null references public.profiles (id) on delete cascade,
-  current_turn_user_id uuid references public.profiles (id),
-  editing_user_id uuid references public.profiles (id),
+  owner_id uuid not null references public.profiles(id) on delete cascade,
+  current_turn_user_id uuid references public.profiles(id),
+  editing_user_id uuid references public.profiles(id),
   map_id text default 'map1',
   max_players integer not null default 50 check (max_players between 1 and 50),
   is_locked boolean default false,
@@ -79,21 +81,21 @@ create table if not exists public.rooms (
 
 alter table public.rooms enable row level security;
 
-create policy "Authenticated can read rooms" on public.rooms
+create policy "Rooms readable by authenticated users" on public.rooms
   for select using (auth.role() = 'authenticated');
 
-create policy "Owner can update room" on public.rooms
+create policy "Room creation requires ownership" on public.rooms
+  for insert with check (auth.uid() = owner_id);
+
+create policy "Room update by owner" on public.rooms
   for update using (auth.uid() = owner_id);
 
-create policy "Owner can delete room" on public.rooms
+create policy "Room delete by owner" on public.rooms
   for delete using (auth.uid() = owner_id);
-
-create policy "Anyone can create room" on public.rooms
-  for insert with check (auth.uid() = owner_id);
 
 create index if not exists rooms_owner_idx on public.rooms(owner_id);
 
--- ROOM USERS -------------------------------------------------------------
+-- ROOM USERS ---------------------------------------------------------------
 create table if not exists public.room_users (
   id uuid primary key default gen_random_uuid(),
   room_id uuid not null references public.rooms(id) on delete cascade,
@@ -107,7 +109,7 @@ create table if not exists public.room_users (
 
 alter table public.room_users enable row level security;
 
-create policy "Authenticated can see room users" on public.room_users
+create policy "Room users readable" on public.room_users
   for select using (auth.role() = 'authenticated');
 
 create policy "Join room" on public.room_users
@@ -121,7 +123,7 @@ create policy "Leave room" on public.room_users
 
 create index if not exists room_users_room_idx on public.room_users(room_id);
 
--- ROOM PERMISSIONS -------------------------------------------------------
+-- ROOM PERMISSIONS ---------------------------------------------------------
 create table if not exists public.room_permissions (
   id uuid primary key default gen_random_uuid(),
   room_id uuid not null references public.rooms(id) on delete cascade,
@@ -132,16 +134,16 @@ create table if not exists public.room_permissions (
 
 alter table public.room_permissions enable row level security;
 
-create policy "Read permissions" on public.room_permissions
+create policy "Permissions readable" on public.room_permissions
   for select using (auth.role() = 'authenticated');
 
-create policy "Owner manages permissions" on public.room_permissions
+create policy "Owner inserts permissions" on public.room_permissions
   for insert with check (auth.uid() = (select owner_id from public.rooms where id = room_id));
 
 create policy "Owner updates permissions" on public.room_permissions
   for update using (auth.uid() = (select owner_id from public.rooms where id = room_id));
 
--- ROOM STATE -------------------------------------------------------------
+-- ROOM STATE ---------------------------------------------------------------
 create table if not exists public.room_state (
   id uuid primary key default gen_random_uuid(),
   room_id uuid not null references public.rooms(id) on delete cascade,
@@ -154,20 +156,24 @@ create table if not exists public.room_state (
 );
 
 alter table public.room_state enable row level security;
-create policy "Read room state" on public.room_state
+
+create policy "State readable" on public.room_state
   for select using (auth.role() = 'authenticated');
-create policy "Insert room state" on public.room_state
+
+create policy "State insert by owner" on public.room_state
   for insert with check (auth.uid() = (select owner_id from public.rooms where id = room_id));
 
-create policy "Update room state" on public.room_state
+create policy "State update by owner" on public.room_state
   for update using (auth.uid() = (select owner_id from public.rooms where id = room_id));
 
--- ROOM UNITS / MARKERS ---------------------------------------------------
+create index if not exists room_state_room_idx on public.room_state(room_id, echelon);
+
+-- ROOM UNITS / MARKERS -----------------------------------------------------
 create table if not exists public.room_units (
   id uuid primary key default gen_random_uuid(),
   room_id uuid not null references public.rooms(id) on delete cascade,
   echelon integer not null default 0,
-  team text check (team in ('blue','red')),
+  team text check (team in ('blue', 'red')),
   slot integer,
   nickname text,
   symbol_key text not null,
@@ -182,7 +188,7 @@ create index if not exists room_units_room_idx on public.room_units(room_id, ech
 
 alter table public.room_units enable row level security;
 
-create policy "Read units" on public.room_units
+create policy "Units readable" on public.room_units
   for select using (auth.role() = 'authenticated');
 
 create policy "Insert units if editor" on public.room_units
@@ -212,7 +218,7 @@ create policy "Delete units if editor" on public.room_units
     )
   );
 
--- ROOM SYMBOLS (simple markers) -----------------------------------------
+-- ROOM SYMBOLS (simple markers) -------------------------------------------
 create table if not exists public.room_symbols (
   id uuid primary key default gen_random_uuid(),
   room_id uuid not null references public.rooms(id) on delete cascade,
@@ -228,7 +234,7 @@ create index if not exists room_symbols_room_idx on public.room_symbols(room_id,
 
 alter table public.room_symbols enable row level security;
 
-create policy "Read symbols" on public.room_symbols
+create policy "Symbols readable" on public.room_symbols
   for select using (auth.role() = 'authenticated');
 
 create policy "Insert symbols if editor" on public.room_symbols
@@ -258,7 +264,7 @@ create policy "Delete symbols if editor" on public.room_symbols
     )
   );
 
--- ROOM DRAWINGS ---------------------------------------------------------
+-- ROOM DRAWINGS -----------------------------------------------------------
 create table if not exists public.room_drawings (
   id uuid primary key default gen_random_uuid(),
   room_id uuid not null references public.rooms(id) on delete cascade,
@@ -274,7 +280,7 @@ create index if not exists room_drawings_room_idx on public.room_drawings(room_i
 
 alter table public.room_drawings enable row level security;
 
-create policy "Read drawings" on public.room_drawings
+create policy "Drawings readable" on public.room_drawings
   for select using (auth.role() = 'authenticated');
 
 create policy "Insert drawings if editor" on public.room_drawings
@@ -304,7 +310,7 @@ create policy "Delete drawings if editor" on public.room_drawings
     )
   );
 
--- CHAT ------------------------------------------------------------------
+-- CHAT --------------------------------------------------------------------
 create table if not exists public.chat_messages (
   id bigint generated always as identity primary key,
   room_id uuid not null references public.rooms(id) on delete cascade,
@@ -317,13 +323,13 @@ create index if not exists chat_room_idx on public.chat_messages(room_id, create
 
 alter table public.chat_messages enable row level security;
 
-create policy "Read chat" on public.chat_messages
+create policy "Chat readable" on public.chat_messages
   for select using (auth.role() = 'authenticated');
 
-create policy "Insert chat" on public.chat_messages
+create policy "Chat insert by author" on public.chat_messages
   for insert with check (auth.role() = 'authenticated' and auth.uid() = user_id);
 
--- AUDIT LOGS ------------------------------------------------------------
+-- AUDIT LOGS --------------------------------------------------------------
 create table if not exists public.action_logs (
   id bigint generated always as identity primary key,
   room_id uuid references public.rooms(id) on delete cascade,
@@ -334,25 +340,38 @@ create table if not exists public.action_logs (
 );
 
 alter table public.action_logs enable row level security;
-create policy "Read logs" on public.action_logs
+
+create policy "Logs readable" on public.action_logs
   for select using (auth.role() = 'authenticated');
-create policy "Insert logs" on public.action_logs
+
+create policy "Logs insertable" on public.action_logs
   for insert with check (auth.role() = 'authenticated');
 
--- Helper function to enforce single-room membership ---------------------
+-- Helper: enforce single active room per user -----------------------------
 create or replace function public.assert_single_room_membership()
-returns trigger as $$
+returns trigger
+language plpgsql
+as $$
 begin
   if exists(select 1 from public.room_users ru where ru.user_id = new.user_id and ru.is_active = true and ru.room_id <> new.room_id) then
     raise exception 'User already active in another room';
   end if;
   return new;
 end;
-$$ language plpgsql;
+$$;
 
 create trigger trg_room_users_single_active
 before insert on public.room_users
 for each row execute procedure public.assert_single_room_membership();
 
--- Helpful realtime publication
-alter publication supabase_realtime add table public.rooms, public.room_users, public.room_units, public.room_symbols, public.room_drawings, public.chat_messages, public.room_permissions;
+-- Realtime publication helpers -------------------------------------------
+do $$
+begin
+  begin
+    alter publication supabase_realtime add table public.rooms, public.room_users, public.room_units,
+      public.room_symbols, public.room_drawings, public.chat_messages, public.room_permissions, public.room_state;
+  exception when duplicate_object then
+    null;
+  end;
+end;
+$$;
