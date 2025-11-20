@@ -2,6 +2,23 @@
 
 import { supabase } from "./supabaseClient";
 
+// Build a domain from the configured Supabase URL so the hidden email we send to
+// Supabase always passes validation, even when users only see nick/password.
+const derivedEmailDomain = (() => {
+  try {
+    const rawUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+    if (rawUrl) {
+      const parsed = new URL(rawUrl);
+      const host = parsed.hostname.replace(/:\d+$/, "");
+      if (host && host.includes(".")) return host;
+      if (host) return `${host}.localdomain`;
+    }
+  } catch (e) {
+    console.warn("Failed to derive email domain from SUPABASE_URL", e);
+  }
+  return "supabase.localdomain";
+})();
+
 export type Profile = {
   id: string;
   nickname: string;
@@ -10,14 +27,14 @@ export type Profile = {
 
 export function nicknameToEmail(nickname: string) {
   // Supabase still requires an email field, but users should only ever see/login with a nickname.
-  // Convert the nickname into a conservative ASCII slug and pair it with a neutral domain.
+  // Convert the nickname into a conservative ASCII slug and pair it with a valid domain.
   const safe = nickname
     .trim()
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "");
   const local = (safe || "user").slice(0, 64);
-  return `${local}@example.com`;
+  return `${local}@${derivedEmailDomain}`;
 }
 
 function normalizePassword(password: string) {
