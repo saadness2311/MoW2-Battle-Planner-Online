@@ -1,6 +1,5 @@
 -- Supabase schema for MoW Battle Planner Online
--- Creates tables, constraints, triggers and RLS policies for nickname-first auth
--- and multiplayer room synchronization.
+-- Nickname-first auth with hidden emails plus multiplayer room syncing tables.
 
 -- Extensions ---------------------------------------------------------------
 create extension if not exists "uuid-ossp";
@@ -353,7 +352,12 @@ returns trigger
 language plpgsql
 as $$
 begin
-  if exists(select 1 from public.room_users ru where ru.user_id = new.user_id and ru.is_active = true and ru.room_id <> new.room_id) then
+  if exists(
+    select 1 from public.room_users ru
+    where ru.user_id = new.user_id
+      and ru.is_active = true
+      and ru.room_id <> new.room_id
+  ) then
     raise exception 'User already active in another room';
   end if;
   return new;
