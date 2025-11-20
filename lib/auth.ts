@@ -42,6 +42,30 @@ function normalizePassword(password: string) {
   return password.length >= 6 ? password : password.padEnd(6, "*");
 }
 
+async function waitForProfile(userId: string, nickname: string, retries = 5) {
+  for (let i = 0; i < retries; i++) {
+    const { data, error } = await supabase
+      .from("profiles")
+      .select("id")
+      .eq("id", userId)
+      .maybeSingle();
+
+    if (data?.id) return data;
+    if (error && error.code !== "PGRST116") throw error;
+
+    // If profile doesn't exist yet, attempt an upsert (will succeed when the
+    // trigger already ran, and will insert when RLS allows it for the current user).
+    await supabase
+      .from("profiles")
+      .upsert({ id: userId, nickname })
+      .select("id")
+      .maybeSingle();
+
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  throw new Error("Не удалось создать профиль. Попробуйте еще раз.");
+}
+
 export async function signUpWithNickname(nickname: string, password: string) {
   const email = nicknameToEmail(nickname);
   const authPassword = normalizePassword(password);
@@ -54,11 +78,7 @@ export async function signUpWithNickname(nickname: string, password: string) {
   const user = data.user;
   if (!user) throw new Error("Не удалось создать пользователя");
 
-  const { error: profileError } = await supabase.from("profiles").insert({
-    id: user.id,
-    nickname,
-  });
-  if (profileError) throw profileError;
+  await waitForProfile(user.id, nickname);
   return user;
 }
 
