@@ -120,8 +120,11 @@ create table if not exists public.room_state (
 alter table public.room_state enable row level security;
 create policy "Read room state" on public.room_state
   for select using (auth.role() = 'authenticated');
+create policy "Insert room state" on public.room_state
+  for insert with check (auth.uid() = (select owner_id from public.rooms where id = room_id));
+
 create policy "Update room state" on public.room_state
-  for insert, update using (auth.uid() = (select owner_id from public.rooms where id = room_id));
+  for update using (auth.uid() = (select owner_id from public.rooms where id = room_id));
 
 -- ROOM UNITS / MARKERS ---------------------------------------------------
 create table if not exists public.room_units (
@@ -146,8 +149,26 @@ alter table public.room_units enable row level security;
 create policy "Read units" on public.room_units
   for select using (auth.role() = 'authenticated');
 
-create policy "Modify units if editor" on public.room_units
-  for insert, update, delete using (
+create policy "Insert units if editor" on public.room_units
+  for insert with check (
+    auth.role() = 'authenticated' and (
+      auth.uid() = (select owner_id from public.rooms where id = room_id)
+      or auth.uid() = (select editing_user_id from public.rooms where id = room_id)
+      or auth.uid() = (select current_turn_user_id from public.rooms where id = room_id)
+    )
+  );
+
+create policy "Update units if editor" on public.room_units
+  for update using (
+    auth.role() = 'authenticated' and (
+      auth.uid() = (select owner_id from public.rooms where id = room_id)
+      or auth.uid() = (select editing_user_id from public.rooms where id = room_id)
+      or auth.uid() = (select current_turn_user_id from public.rooms where id = room_id)
+    )
+  );
+
+create policy "Delete units if editor" on public.room_units
+  for delete using (
     auth.role() = 'authenticated' and (
       auth.uid() = (select owner_id from public.rooms where id = room_id)
       or auth.uid() = (select editing_user_id from public.rooms where id = room_id)
@@ -174,8 +195,26 @@ alter table public.room_symbols enable row level security;
 create policy "Read symbols" on public.room_symbols
   for select using (auth.role() = 'authenticated');
 
-create policy "Modify symbols if editor" on public.room_symbols
-  for insert, update, delete using (
+create policy "Insert symbols if editor" on public.room_symbols
+  for insert with check (
+    auth.role() = 'authenticated' and (
+      auth.uid() = (select owner_id from public.rooms where id = room_id)
+      or auth.uid() = (select editing_user_id from public.rooms where id = room_id)
+      or auth.uid() = (select current_turn_user_id from public.rooms where id = room_id)
+    )
+  );
+
+create policy "Update symbols if editor" on public.room_symbols
+  for update using (
+    auth.role() = 'authenticated' and (
+      auth.uid() = (select owner_id from public.rooms where id = room_id)
+      or auth.uid() = (select editing_user_id from public.rooms where id = room_id)
+      or auth.uid() = (select current_turn_user_id from public.rooms where id = room_id)
+    )
+  );
+
+create policy "Delete symbols if editor" on public.room_symbols
+  for delete using (
     auth.role() = 'authenticated' and (
       auth.uid() = (select owner_id from public.rooms where id = room_id)
       or auth.uid() = (select editing_user_id from public.rooms where id = room_id)
@@ -202,8 +241,26 @@ alter table public.room_drawings enable row level security;
 create policy "Read drawings" on public.room_drawings
   for select using (auth.role() = 'authenticated');
 
-create policy "Modify drawings if editor" on public.room_drawings
-  for insert, update, delete using (
+create policy "Insert drawings if editor" on public.room_drawings
+  for insert with check (
+    auth.role() = 'authenticated' and (
+      auth.uid() = (select owner_id from public.rooms where id = room_id)
+      or auth.uid() = (select editing_user_id from public.rooms where id = room_id)
+      or auth.uid() = (select current_turn_user_id from public.rooms where id = room_id)
+    )
+  );
+
+create policy "Update drawings if editor" on public.room_drawings
+  for update using (
+    auth.role() = 'authenticated' and (
+      auth.uid() = (select owner_id from public.rooms where id = room_id)
+      or auth.uid() = (select editing_user_id from public.rooms where id = room_id)
+      or auth.uid() = (select current_turn_user_id from public.rooms where id = room_id)
+    )
+  );
+
+create policy "Delete drawings if editor" on public.room_drawings
+  for delete using (
     auth.role() = 'authenticated' and (
       auth.uid() = (select owner_id from public.rooms where id = room_id)
       or auth.uid() = (select editing_user_id from public.rooms where id = room_id)
