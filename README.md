@@ -25,6 +25,8 @@
    ```env
    NEXT_PUBLIC_SUPABASE_URL=https://<project>.supabase.co
    NEXT_PUBLIC_SUPABASE_ANON_KEY=<anon-key>
+   SUPABASE_SERVICE_ROLE_KEY=<service-role-key> # нужен только на серверных роутов регистрации
+   AUTH_EMAIL_DOMAIN=<optional-custom-domain-for-hidden-emails>
    ```
 
 3. В Supabase выполните SQL из [`supabase_schema.sql`](./supabase_schema.sql) через SQL Editor (обеспечьте включенный pgcrypto).
@@ -47,7 +49,7 @@
 
 ## Структура Supabase
 
-- `profiles`: id (auth.users), `nickname` (уник), `role`.
+- `profiles`: id (auth.users), `nickname` (уник), скрытый `auth_email`, `role`.
 - `rooms`: уникальное имя, пароль (hash), владелец, текущий ход, текущий редактор, карта, флаг блокировки, max_players.
 - `room_users`: пользователи комнаты, роль (`creator`/`spectator`), last_seen, is_active; триггер запрещает одновременное пребывание в двух комнатах.
 - `room_permissions`: кто сейчас может редактировать карту.

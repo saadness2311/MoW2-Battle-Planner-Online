@@ -11,6 +11,7 @@ create extension if not exists pgcrypto;
 create table if not exists public.profiles (
   id uuid primary key references auth.users (id) on delete cascade,
   nickname text not null unique check (char_length(nickname) >= 3),
+  auth_email text not null unique,
   role text not null default 'player',
   created_at timestamptz not null default now()
 );
@@ -22,10 +23,11 @@ language plpgsql
 security definer set search_path = public
 as $$
 begin
-  insert into public.profiles (id, nickname)
+  insert into public.profiles (id, nickname, auth_email)
   values (
     new.id,
-    coalesce(nullif(trim(new.raw_user_meta_data->>'nickname'), ''), 'user_' || substr(new.id::text, 1, 8))
+    coalesce(nullif(trim(new.raw_user_meta_data->>'nickname'), ''), 'user_' || substr(new.id::text, 1, 8)),
+    coalesce(nullif(trim(new.email), ''), 'user_' || substr(new.id::text, 1, 8) || '@users.local')
   )
   on conflict (id) do nothing;
   return new;
@@ -47,6 +49,18 @@ create policy "Insert own profile" on public.profiles
 
 create policy "Update own profile" on public.profiles
   for update using (auth.uid() = id);
+
+-- Allow nickname -> auth_email lookup through a definer function for unauthenticated clients
+create or replace function public.auth_email_for_nickname(p_nickname text)
+returns text
+language sql
+security definer
+set search_path = public
+as $$
+  select auth_email from public.profiles where nickname = p_nickname limit 1;
+$$;
+
+grant execute on function public.auth_email_for_nickname(text) to anon, authenticated;
 
 -- ROOMS ------------------------------------------------------------------
 create table if not exists public.rooms (

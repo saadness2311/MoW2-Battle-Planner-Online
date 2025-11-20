@@ -2,88 +2,60 @@
 
 import { supabase } from "./supabaseClient";
 
-// Build a domain from the configured Supabase URL so the hidden email we send to
-// Supabase always passes validation, even when users only see nick/password.
-const derivedEmailDomain = (() => {
-  try {
-    const rawUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-    if (rawUrl) {
-      const parsed = new URL(rawUrl);
-      const host = parsed.hostname.replace(/:\d+$/, "");
-      if (host && host.includes(".")) return host;
-      if (host) return `${host}.localdomain`;
-    }
-  } catch (e) {
-    console.warn("Failed to derive email domain from SUPABASE_URL", e);
-  }
-  return "supabase.localdomain";
-})();
-
 export type Profile = {
   id: string;
   nickname: string;
   role: string;
 };
 
-export function nicknameToEmail(nickname: string) {
-  // Supabase still requires an email field, but users should only ever see/login with a nickname.
-  // Convert the nickname into a conservative ASCII slug and pair it with a valid domain.
-  const safe = nickname
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-  const local = (safe || "user").slice(0, 64);
-  return `${local}@${derivedEmailDomain}`;
-}
-
 function normalizePassword(password: string) {
   // Supabase enforces a minimum of 6 chars; pad silently to keep UX at >=1 char
   return password.length >= 6 ? password : password.padEnd(6, "*");
 }
 
-async function waitForProfile(userId: string, nickname: string, retries = 5) {
-  for (let i = 0; i < retries; i++) {
-    const { data, error } = await supabase
-      .from("profiles")
-      .select("id")
-      .eq("id", userId)
-      .maybeSingle();
+function normalizeNickname(nickname: string) {
+  return nickname.trim();
+}
 
-    if (data?.id) return data;
-    if (error && error.code !== "PGRST116") throw error;
-
-    // If profile doesn't exist yet, attempt an upsert (will succeed when the
-    // trigger already ran, and will insert when RLS allows it for the current user).
-    await supabase
-      .from("profiles")
-      .upsert({ id: userId, nickname })
-      .select("id")
-      .maybeSingle();
-
-    await new Promise((r) => setTimeout(r, 250));
+async function resolveEmailForNickname(nickname: string) {
+  const { data, error } = await supabase.rpc("auth_email_for_nickname", {
+    p_nickname: nickname,
+  });
+  if (error || !data) {
+    throw new Error(
+      "Не удалось найти пользователя. Проверьте ник или зарегистрируйтесь заново."
+    );
   }
-  throw new Error("Не удалось создать профиль. Попробуйте еще раз.");
+  return data as string;
 }
 
 export async function signUpWithNickname(nickname: string, password: string) {
-  const email = nicknameToEmail(nickname);
+  const cleanNick = normalizeNickname(nickname);
   const authPassword = normalizePassword(password);
-  const { data, error } = await supabase.auth.signUp({
+
+  const res = await fetch("/api/auth/register", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ nickname: cleanNick, password: authPassword }),
+  });
+
+  if (!res.ok) {
+    const msg = await res.text();
+    throw new Error(msg || "Не удалось создать пользователя");
+  }
+
+  const { email } = (await res.json()) as { email: string };
+
+  const { error } = await supabase.auth.signInWithPassword({
     email,
     password: authPassword,
-    options: { data: { nickname } },
   });
   if (error) throw error;
-  const user = data.user;
-  if (!user) throw new Error("Не удалось создать пользователя");
-
-  await waitForProfile(user.id, nickname);
-  return user;
 }
 
 export async function signInWithNickname(nickname: string, password: string) {
-  const email = nicknameToEmail(nickname);
+  const cleanNick = normalizeNickname(nickname);
+  const email = await resolveEmailForNickname(cleanNick);
   const authPassword = normalizePassword(password);
   const { data, error } = await supabase.auth.signInWithPassword({
     email,
