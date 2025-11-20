@@ -8,17 +8,16 @@ export type Profile = {
   role: string;
 };
 
-function toEmailSafeLocalPart(nickname: string) {
-  const trimmed = nickname.trim();
-  const hex = Array.from(trimmed)
-    .map((ch) => ch.charCodeAt(0).toString(16).padStart(2, "0"))
-    .join("");
-  const local = `mow_${hex || "user"}`;
-  return local.slice(0, 64);
-}
-
 export function nicknameToEmail(nickname: string) {
-  return `${toEmailSafeLocalPart(nickname)}@mow.local`;
+  // Supabase still requires an email field, but users should only ever see/login with a nickname.
+  // Convert the nickname into a conservative ASCII slug and pair it with a neutral domain.
+  const safe = nickname
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  const local = (safe || "user").slice(0, 64);
+  return `${local}@example.com`;
 }
 
 function normalizePassword(password: string) {
