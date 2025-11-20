@@ -1,5 +1,5 @@
-import LobbyRoomList from "@/components/LobbyRoomList";
+import { redirect } from "next/navigation";
 
-export default function LobbyPage() {
-  return <LobbyRoomList />;
+export default function LegacyLobby() {
+  redirect("/rooms");
 }

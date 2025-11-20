@@ -6,32 +6,40 @@ import { logError, logInfo } from "./logger";
 export async function savePlan(roomId: string, userId: string, echelon: number) {
   try {
     const { data: units } = await supabase
-      .from("units")
+      .from("room_units")
       .select("*")
       .eq("room_id", roomId)
-      .eq("echelon_index", echelon);
+      .eq("echelon", echelon);
+
+    const { data: symbols } = await supabase
+      .from("room_symbols")
+      .select("*")
+      .eq("room_id", roomId)
+      .eq("echelon", echelon);
 
     const { data: drawings } = await supabase
-      .from("drawings")
+      .from("room_drawings")
       .select("*")
       .eq("room_id", roomId)
-      .eq("echelon_index", echelon);
+      .eq("echelon", echelon);
 
     const plan = {
       version: 1,
       room_id: roomId,
-      echelon_index: echelon,
+      echelon,
       units,
-      drawings
+      symbols,
+      drawings,
     };
 
-    await supabase.from("plans").insert({
+    await supabase.from("action_logs").insert({
       room_id: roomId,
       user_id: userId,
-      title: `План ${new Date().toLocaleString()}`,
-      data: plan
+      action: "plan_saved",
+      details: { echelon },
     });
 
+    downloadPlanAsJSON(plan);
     logInfo("План сохранён");
     return plan;
   } catch (e) {
@@ -41,7 +49,7 @@ export async function savePlan(roomId: string, userId: string, echelon: number) 
 
 export function downloadPlanAsJSON(plan: any) {
   const blob = new Blob([JSON.stringify(plan, null, 2)], {
-    type: "application/json"
+    type: "application/json",
   });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
@@ -54,40 +62,57 @@ export function downloadPlanAsJSON(plan: any) {
 export async function loadPlanFromJSON(roomId: string, echelon: number, json: any) {
   try {
     await supabase
-      .from("units")
+      .from("room_units")
       .delete()
       .eq("room_id", roomId)
-      .eq("echelon_index", echelon);
+      .eq("echelon", echelon);
     await supabase
-      .from("drawings")
+      .from("room_symbols")
       .delete()
       .eq("room_id", roomId)
-      .eq("echelon_index", echelon);
+      .eq("echelon", echelon);
+    await supabase
+      .from("room_drawings")
+      .delete()
+      .eq("room_id", roomId)
+      .eq("echelon", echelon);
 
     if (json.units && json.units.length > 0) {
       const newUnits = json.units.map((u: any) => ({
         room_id: roomId,
-        echelon_index: echelon,
+        echelon,
         type: u.type,
         x: u.x,
         y: u.y,
         z_index: u.z_index,
-        symbol_name: u.symbol_name,
-        owner_user: u.owner_user,
-        owner_slot: u.owner_slot
+        symbol_key: u.symbol_key,
+        team: u.team,
+        slot: u.slot,
+        nickname: u.nickname,
       }));
-      await supabase.from("units").insert(newUnits);
+      await supabase.from("room_units").insert(newUnits);
+    }
+
+    if (json.symbols && json.symbols.length > 0) {
+      const newSymbols = json.symbols.map((s: any) => ({
+        room_id: roomId,
+        echelon,
+        symbol_key: s.symbol_key,
+        x: s.x,
+        y: s.y,
+      }));
+      await supabase.from("room_symbols").insert(newSymbols);
     }
 
     if (json.drawings && json.drawings.length > 0) {
       const newDrawings = json.drawings.map((d: any) => ({
         room_id: roomId,
-        echelon_index: echelon,
+        echelon,
         type: d.type,
         points: d.points,
-        style: d.style
+        style: d.style,
       }));
-      await supabase.from("drawings").insert(newDrawings);
+      await supabase.from("room_drawings").insert(newDrawings);
     }
 
     logInfo("План успешно загружен");

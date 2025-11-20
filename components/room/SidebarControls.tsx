@@ -1,18 +1,20 @@
 // components/room/SidebarControls.tsx
 "use client";
 
+import { useEffect, useMemo, useState } from "react";
 import type { DrawingMode } from "../RoomLayout";
 
 type SidebarControlsProps = {
-  roomId: string;
+  currentMapId: string;
   currentEchelon: number;
   drawingMode: DrawingMode;
   selectedSymbol: string | null;
   selectedOwnerSlot: number | null;
   onSetDrawingMode: (mode: DrawingMode) => void;
   onSelectSymbol: (symbol: string | null) => void;
-  onSelectOwnerSlot: (slotIndex: number) => void;
+  onSelectOwnerSlot: (slotIndex: number, symbolKey?: string) => void;
   onChangeMap: (mapId: string) => void;
+  onResetMap: () => void;
   onClearFront: () => void;
   onClearMap: () => void;
   onSavePlan: () => void;
@@ -116,14 +118,83 @@ const ICON_LABELS: Record<string, string> = {
   symb18: "Вспомогательная техника",
 };
 
-const MAP_OPTIONS = [
-  "1. Airfield-a",
-  "2. Airfield-b",
-  "3. Town-a",
-  "4. Town-b",
+const MAP_OPTIONS = Array.from({ length: 25 }, (_, i) => {
+  const idx = i + 1;
+  const label = `Карта ${idx}`;
+  return [
+    { value: `map${idx}`, label: `${idx}. ${label}-a` },
+    { value: `map${idx}-alt`, label: `${idx}. ${label}-b` },
+  ];
+}).flat();
+
+const REGIMENT_NAMES: Record<string, string[]> = {
+  germany: [
+    "Самоходный",
+    "Развед",
+    "Механка",
+    "Гаубицы",
+    "Моторизованная пехота",
+    "Огнеметный",
+    "ПВО",
+    "Саперка",
+    "Гренадерский",
+    "Минометный",
+    "Штурмовой",
+    "Тяжелый танковый",
+    "Противотанковый",
+    "Средний танковый",
+    "Первый артиллерийский",
+    "Первый пехотный",
+    "Первый танковый",
+  ],
+  usa: [
+    "Самоходный",
+    "Развед",
+    "Механка",
+    "Гаубицы",
+    "Моторизованная пехота",
+    "Огнеметный",
+    "ПВО",
+    "Десантный",
+    "Тяжелый танковый",
+    "Минометный",
+    "Саперный",
+    "Средний танковый",
+    "Противотанковый",
+    "Штурмовой",
+    "Первый артиллерийский",
+    "Первый пехотный",
+    "Первый танковый",
+  ],
+  ussr: [
+    "Самоходный",
+    "Развед",
+    "Механка",
+    "Гаубицы",
+    "Моторизованная пехота",
+    "Огнеметный",
+    "ПВО",
+    "Саперка",
+    "Тяжелый танковый",
+    "Минометный",
+    "Штурмовой",
+    "Средний танковый",
+    "Противотанковый",
+    "88-ой штурмовой",
+    "Первый артиллерийский",
+    "Первый пехотный",
+    "Первый танковый",
+  ],
+};
+
+const NATIONS = [
+  { value: "ussr", label: "USSR" },
+  { value: "germany", label: "Germany" },
+  { value: "usa", label: "USA" },
 ];
 
 export default function SidebarControls({
+  currentMapId,
   currentEchelon,
   drawingMode,
   selectedSymbol,
@@ -132,11 +203,20 @@ export default function SidebarControls({
   onSelectSymbol,
   onSelectOwnerSlot,
   onChangeMap,
+  onResetMap,
   onClearFront,
   onClearMap,
   onSavePlan,
   onLoadPlan,
 }: SidebarControlsProps) {
+  const [mapValue, setMapValue] = useState(currentMapId || "map1");
+
+  useEffect(() => {
+    if (currentMapId) {
+      setMapValue(currentMapId);
+    }
+  }, [currentMapId]);
+
   const toggleMode = (mode: DrawingMode) => {
     onSetDrawingMode(drawingMode === mode ? "none" : mode);
   };
@@ -147,6 +227,20 @@ export default function SidebarControls({
     } else {
       onSelectSymbol(name);
     }
+  };
+
+  const handleApplyMap = () => {
+    if (mapValue) onChangeMap(mapValue);
+  };
+
+  const handleResetMap = () => {
+    setMapValue("map1");
+    onResetMap();
+  };
+
+  const handleSelectRegiment = (slotIndex: number, symbolKey: string) => {
+    onSelectOwnerSlot(slotIndex, symbolKey);
+    onSelectSymbol(symbolKey);
   };
 
   return (
@@ -164,19 +258,26 @@ export default function SidebarControls({
         <div className="text-xs font-semibold text-zinc-300">Выберите карту:</div>
         <select
           className="w-full bg-[#191b20] border border-zinc-700 rounded px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500"
-          onChange={(e) => onChangeMap(e.target.value)}
+          value={mapValue}
+          onChange={(e) => setMapValue(e.target.value)}
         >
-          {MAP_OPTIONS.map((label, i) => (
-            <option key={i} value={`map${i + 1}`}>
-              {label}
+          {MAP_OPTIONS.map((opt) => (
+            <option key={opt.value} value={opt.value}>
+              {opt.label}
             </option>
           ))}
         </select>
         <div className="flex gap-1 pt-1">
-          <button className="flex-1 bg-[#191b20] border border-zinc-700 rounded px-2 py-1 text-xs hover:border-emerald-500">
+          <button
+            className="flex-1 bg-[#191b20] border border-zinc-700 rounded px-2 py-1 text-xs hover:border-emerald-500"
+            onClick={handleApplyMap}
+          >
             Загрузить карту
           </button>
-          <button className="flex-1 bg-[#191b20] border border-zinc-700 rounded px-2 py-1 text-xs hover:border-red-500">
+          <button
+            className="flex-1 bg-[#191b20] border border-zinc-700 rounded px-2 py-1 text-xs hover:border-red-500"
+            onClick={handleResetMap}
+          >
             Сбросить карту
           </button>
         </div>
@@ -220,7 +321,7 @@ export default function SidebarControls({
             side="blue"
             index={idx + 1}
             selectedOwnerSlot={selectedOwnerSlot}
-            onSelectOwnerSlot={onSelectOwnerSlot}
+            onSelectOwnerSlot={handleSelectRegiment}
           />
         ))}
 
@@ -233,7 +334,7 @@ export default function SidebarControls({
             side="red"
             index={idx + 6}
             selectedOwnerSlot={selectedOwnerSlot}
-            onSelectOwnerSlot={onSelectOwnerSlot}
+            onSelectOwnerSlot={handleSelectRegiment}
           />
         ))}
       </div>
@@ -308,7 +409,7 @@ type RegimentSlotProps = {
   side: "blue" | "red";
   index: number; // 1..10
   selectedOwnerSlot: number | null;
-  onSelectOwnerSlot: (slotIndex: number) => void;
+  onSelectOwnerSlot: (slotIndex: number, symbolKey: string) => void;
 };
 
 function RegimentSlot({
@@ -318,6 +419,17 @@ function RegimentSlot({
   onSelectOwnerSlot,
 }: RegimentSlotProps) {
   const isSelected = selectedOwnerSlot === index;
+  const defaultNation = side === "blue" ? "ussr" : "germany";
+  const [nation, setNation] = useState<string>(defaultNation);
+  const [regiment, setRegiment] = useState<number>(1);
+
+  useEffect(() => {
+    setNation(defaultNation);
+  }, [defaultNation]);
+
+  const regOptions = useMemo(() => REGIMENT_NAMES[nation] || [], [nation]);
+  const symbolKey = `${nation}_reg${regiment}`;
+  const regLabel = regOptions[regiment - 1] || `Полк ${regiment}`;
 
   return (
     <div
@@ -328,18 +440,52 @@ function RegimentSlot({
     >
       <div className="flex items-center justify-between text-[11px] text-zinc-400">
         <span>Слот {index}</span>
-        <span>{side === "blue" ? "USSR" : "Germany"}</span>
+        <span>{nation.toUpperCase()}</span>
       </div>
-      <div className="flex gap-1">
-        <select className="flex-1 bg-[#15171c] border border-zinc-700 rounded px-1 py-[2px] text-[11px]">
-          <option>Самоходный</option>
-        </select>
-        <button
-          className="px-2 py-[2px] text-[11px] bg-[#22252e] border border-zinc-700 rounded hover:border-emerald-500"
-          onClick={() => onSelectOwnerSlot(index)}
+      <div className="flex gap-1 items-center">
+        <select
+          className="flex-1 bg-[#15171c] border border-zinc-700 rounded px-1 py-[2px] text-[11px]"
+          value={nation}
+          onChange={(e) => {
+            setNation(e.target.value);
+            setRegiment(1);
+          }}
         >
-          Поставить
-        </button>
+          {NATIONS.map((n) => (
+            <option key={n.value} value={n.value}>
+              {n.label}
+            </option>
+          ))}
+        </select>
+        <select
+          className="flex-1 bg-[#15171c] border border-zinc-700 rounded px-1 py-[2px] text-[11px]"
+          value={regiment}
+          onChange={(e) => setRegiment(Number(e.target.value))}
+        >
+          {regOptions.map((label, idx) => (
+            <option key={`${nation}-reg-${idx + 1}`} value={idx + 1}>
+              {idx + 1}. {label}
+            </option>
+          ))}
+        </select>
+      </div>
+      <div className="flex items-center gap-2">
+        <div className="w-10 h-10 bg-[#0f1116] border border-zinc-800 rounded flex items-center justify-center overflow-hidden">
+          <img
+            src={`/assets/${nation}/reg${regiment}.png`}
+            alt={regLabel}
+            className="w-full h-full object-contain"
+          />
+        </div>
+        <div className="flex-1">
+          <div className="text-[11px] text-zinc-300">{regLabel}</div>
+          <button
+            className="mt-1 px-2 py-[2px] text-[11px] bg-[#22252e] border border-zinc-700 rounded hover:border-emerald-500"
+            onClick={() => onSelectOwnerSlot(index, symbolKey)}
+          >
+            Поставить
+          </button>
+        </div>
       </div>
     </div>
   );

@@ -1,61 +1,88 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
+import { Profile, getCurrentProfile, signOut } from "@/lib/auth";
+import { createRoom, deleteRoom, fetchRooms, joinRoom } from "@/lib/rooms";
 import { Room } from "@/lib/types";
-import { Session, clearSession, getSession } from "@/lib/auth";
-import { createRoom, deleteRoom } from "@/lib/rooms";
 
 export default function LobbyRoomList() {
   const [rooms, setRooms] = useState<Room[]>([]);
-  const [session, setSessionState] = useState<Session | null>(null);
+  const [profile, setProfile] = useState<Profile | null>(null);
   const [name, setName] = useState("");
   const [password, setPassword] = useState("");
+  const [description, setDescription] = useState("");
+  const [roomPassword, setRoomPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
 
+  const canCreate = useMemo(() => name.trim().length >= 3, [name]);
+
   useEffect(() => {
-    const s = getSession();
-    if (!s) {
-      window.location.href = "/auth";
-    } else {
-      setSessionState(s);
+    async function init() {
+      const p = await getCurrentProfile();
+      if (!p) {
+        window.location.href = "/login";
+        return;
+      }
+      setProfile(p);
       loadRooms();
+
+      const channel = supabase
+        .channel("rooms-list")
+        .on(
+          "postgres_changes",
+          { event: "*", schema: "public", table: "rooms" },
+          () => loadRooms(),
+        )
+        .subscribe();
+
+      return () => {
+        supabase.removeChannel(channel);
+      };
     }
+    init();
   }, []);
 
   async function loadRooms() {
-    const { data } = await supabase
-      .from("rooms")
-      .select("*")
-      .order("created_at", { ascending: false });
-    setRooms((data as Room[]) || []);
+    try {
+      const data = await fetchRooms();
+      setRooms(data as Room[]);
+    } catch (err: any) {
+      setError(err.message);
+    }
   }
 
   async function handleCreate() {
-    if (!session) return;
-    if (name.trim().length < 3) {
-      setError("Название минимум 3 символа");
-      return;
+    if (!profile) return;
+    try {
+      const roomId = await createRoom(profile, name.trim(), password || undefined, description || undefined);
+      setName("");
+      setPassword("");
+      setDescription("");
+      if (roomId) window.location.href = `/room/${roomId}`;
+    } catch (err: any) {
+      setError(err.message);
     }
-    const res = await createRoom(session, name.trim(), password);
-    if ((res as any).error) {
-      setError((res as any).error);
-      return;
+  }
+
+  async function handleJoin(roomId: string) {
+    if (!profile) return;
+    try {
+      await joinRoom(profile, roomId, roomPassword || undefined);
+      window.location.href = `/room/${roomId}`;
+    } catch (err: any) {
+      setError(err.message);
     }
-    setName("");
-    setPassword("");
-    loadRooms();
   }
 
   async function handleDelete(roomId: string) {
-    if (!session) return;
-    await deleteRoom(roomId, session);
-    loadRooms();
+    if (!profile) return;
+    await deleteRoom(roomId, profile);
   }
 
   function logout() {
-    clearSession();
-    window.location.href = "/auth";
+    signOut();
+    window.location.href = "/login";
   }
 
   return (
@@ -63,10 +90,8 @@ export default function LobbyRoomList() {
       <div className="flex justify-between items-center">
         <div>
           <div className="text-xl font-bold">Лобби комнат</div>
-          {session && (
-            <div className="text-sm text-neutral-400">
-              Вы вошли как {session.nickname}
-            </div>
+          {profile && (
+            <div className="text-sm text-neutral-400">Вы вошли как {profile.nickname}</div>
           )}
         </div>
 
@@ -87,6 +112,12 @@ export default function LobbyRoomList() {
           className="px-3 py-2 rounded bg-neutral-900 border border-neutral-700 text-sm"
         />
         <input
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+          placeholder="Описание (опционально)"
+          className="px-3 py-2 rounded bg-neutral-900 border border-neutral-700 text-sm"
+        />
+        <input
           value={password}
           onChange={(e) => setPassword(e.target.value)}
           placeholder="Пароль (опционально)"
@@ -95,7 +126,8 @@ export default function LobbyRoomList() {
         {error && <div className="text-red-400 text-sm">{error}</div>}
         <button
           onClick={handleCreate}
-          className="px-3 py-2 rounded bg-green-600 hover:bg-green-500 text-sm font-semibold"
+          disabled={!canCreate}
+          className="px-3 py-2 rounded bg-green-600 hover:bg-green-500 text-sm font-semibold disabled:opacity-50"
         >
           Создать
         </button>
@@ -112,17 +144,24 @@ export default function LobbyRoomList() {
               <div>
                 <div className="font-semibold">{r.name}</div>
                 <div className="text-neutral-400">
-                  id: {r.id.slice(0, 8)}… · создатель: {r.owner_id.slice(0, 6)}…
+                  id: {r.id.slice(0, 8)}… · игроков: {r.max_players} · карта: {r.map_id || "map1"}
                 </div>
+                {r.description && <div className="text-neutral-400 text-xs">{r.description}</div>}
               </div>
-              <div className="flex gap-2">
+              <div className="flex gap-2 items-center">
+                <input
+                  type="password"
+                  placeholder="Пароль"
+                  className="px-2 py-1 bg-neutral-800 border border-neutral-700 rounded text-xs"
+                  onChange={(e) => setRoomPassword(e.target.value)}
+                />
                 <button
-                  onClick={() => (window.location.href = `/room/${r.id}`)}
+                  onClick={() => handleJoin(r.id)}
                   className="px-3 py-1 bg-blue-600 hover:bg-blue-500 rounded"
                 >
                   Войти
                 </button>
-                {session && session.userId === r.owner_id && (
+                {profile && profile.id === r.owner_id && (
                   <button
                     onClick={() => handleDelete(r.id)}
                     className="px-3 py-1 bg-red-600 hover:bg-red-500 rounded"

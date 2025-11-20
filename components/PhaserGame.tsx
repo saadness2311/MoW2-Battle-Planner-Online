@@ -15,6 +15,7 @@ type PhaserGameProps = {
   drawingsVersion: number;
   selectedSymbol: string | null;
   ownerSlot: number | null;
+  userId: string;
 };
 
 export default function PhaserGame({
@@ -26,6 +27,7 @@ export default function PhaserGame({
   drawingsVersion,
   selectedSymbol,
   ownerSlot,
+  userId,
 }: PhaserGameProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const gameRef = useRef<Phaser.Game | null>(null);
@@ -67,6 +69,7 @@ export default function PhaserGame({
           drawingsVersion,
           selectedSymbol,
           ownerSlot,
+          userId,
         });
       }
     });
@@ -93,6 +96,7 @@ export default function PhaserGame({
         drawingsVersion,
         selectedSymbol,
         ownerSlot,
+        userId,
       });
     }
   }, [
@@ -104,6 +108,7 @@ export default function PhaserGame({
     drawingsVersion,
     selectedSymbol,
     ownerSlot,
+    userId,
   ]);
 
   return <div ref={containerRef} className="w-full h-full" />;
