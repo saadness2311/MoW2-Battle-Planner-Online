@@ -5,7 +5,20 @@
 create extension if not exists "uuid-ossp";
 create extension if not exists pgcrypto;
 
--- USERS / PROFILES ---------------------------------------------------------
+-- Expose a compatibility view so PostgREST clients can read auth.users as
+-- public.users without schema cache errors (read-only by default).
+create or replace view public.users as
+select id,
+       email,
+       raw_user_meta_data,
+       created_at,
+       last_sign_in_at,
+       phone,
+       app_metadata
+  from auth.users;
+
+grant select on public.users to anon, authenticated, service_role;
+
 -- Profiles mirror auth.users. Nickname is unique and user-facing; auth_email is
 -- used internally for Supabase auth flows.
 create table if not exists public.profiles (
