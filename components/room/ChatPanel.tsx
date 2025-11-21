@@ -2,11 +2,15 @@
 
 import { useEffect, useRef, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
-import { Profile } from "@/lib/auth";
+
+type ChatProfile = {
+  id: string;
+  nickname?: string;
+};
 
 const LIMIT = 200;
 
-export default function ChatPanel({ roomId, profile }: { roomId: string; profile: Profile }) {
+export default function ChatPanel({ roomId, profile }: { roomId: string; profile: ChatProfile }) {
   const [messages, setMessages] = useState<any[]>([]);
   const [text, setText] = useState("");
   const [lastSent, setLastSent] = useState<number>(0);

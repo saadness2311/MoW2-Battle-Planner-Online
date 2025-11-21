@@ -2,7 +2,16 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import type { DrawingMode } from "../RoomLayout";
+
+type DrawingMode =
+  | "none"
+  | "free"
+  | "line"
+  | "arrow"
+  | "circle"
+  | "polygon"
+  | "front"
+  | "enemy";
 
 type SidebarControlsProps = {
   currentMapId: string;

@@ -1,8 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Session } from "@supabase/supabase-js";
 import { Room, RoomPlayer } from "@/lib/types";
+import { Session } from "@/lib/auth";
 import { giveTurn, takeTurn, clearFront, clearMap } from "@/lib/roomActions";
 import EchelonCopyButton from "./EchelonCopyButton";
 import UnitSlotsPanel from "./UnitSlotsPanel";
@@ -21,8 +21,7 @@ export default function RoomTopPanel({
   echelon: number;
   setEchelon: (v: number) => void;
 }) {
-  const userId = session.user?.id || "";
-  const isAdmin = room.owner_id === userId;
+  const isAdmin = room.owner_id === session.userId;
   const [activeSlot, setActiveSlot] = useState(0);
 
   useEffect(() => {
@@ -90,7 +89,7 @@ export default function RoomTopPanel({
                 </button>
               ))}
               <button
-                onClick={() => takeTurn(room.id, userId)}
+                onClick={() => takeTurn(room.id, session.userId)}
                 className="px-2 py-1 bg-red-500 hover:bg-red-400 rounded text-sm"
               >
                 Забрать ход
@@ -121,7 +120,7 @@ export default function RoomTopPanel({
         {isAdmin && (
           <SaveLoadPanel
             roomId={room.id}
-            userId={userId}
+            userId={session.userId}
             echelon={echelon}
           />
         )}

@@ -2,7 +2,13 @@
 "use client";
 
 import { useState } from "react";
-import type { PlayerInfo } from "../RoomLayout";
+
+type PlayerInfo = {
+  id: string;
+  nickname: string;
+  isOwner: boolean;
+  isCurrentTurn: boolean;
+};
 
 type TopRoomPanelProps = {
   roomName: string;

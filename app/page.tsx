@@ -1,19 +1,16 @@
 "use client";
 
 import { useEffect } from "react";
-import { supabase } from "@/lib/supabaseClient";
+import { useRouter } from "next/navigation";
+import { getSession } from "@/lib/auth";
 
 export default function HomePage() {
+  const router = useRouter();
+
   useEffect(() => {
-    async function redirect() {
-      const { data } = await supabase.auth.getSession();
-      if (data.session) {
-        window.location.replace("/rooms");
-      } else {
-        window.location.replace("/login");
-      }
-    }
-    redirect();
+    const s = getSession();
+    if (s) router.replace("/lobby");
+    else router.replace("/auth");
   }, []);
 
   return null;

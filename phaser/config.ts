@@ -1,4 +1,4 @@
-import Phaser from "phaser";
+import * as Phaser from "phaser";
 import BattleScene from "./scenes/BattleScene";
 
 export function createPhaserConfig(

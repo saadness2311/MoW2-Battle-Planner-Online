@@ -1,7 +1,7 @@
 "use client";
 
-import { Session } from "@supabase/supabase-js";
 import { Room, RoomPlayer } from "@/lib/types";
+import { Session } from "@/lib/auth";
 import UnitCatalog from "./UnitCatalog";
 
 export default function RoomSidePanel({
@@ -17,7 +17,7 @@ export default function RoomSidePanel({
   echelon: number;
   setEchelon: (v: number) => void;
 }) {
-  const myTurn = room.current_turn_user_id === session.user?.id;
+  const myTurn = room.current_turn_user_id === session.userId;
 
   function setMode(mode: string) {
     window.dispatchEvent(new CustomEvent("SET_DRAW_MODE", { detail: mode }));

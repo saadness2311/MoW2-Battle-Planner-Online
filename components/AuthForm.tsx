@@ -1,38 +1,22 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import {
-  signInWithNickname,
-  signOut,
-  signUpWithNickname,
-  getCurrentProfile,
-} from "@/lib/auth";
+import { useState } from "react";
+import { supabase } from "@/lib/supabaseClient";
+import { hashPassword } from "@/lib/hashPassword";
+import { setSession } from "@/lib/auth";
 
-export default function AuthForm({ mode }: { mode: "login" | "register" }) {
+export default function AuthForm() {
   const [nickname, setNickname] = useState("");
   const [password, setPassword] = useState("");
+  const [mode, setMode] = useState<"login" | "register">("register");
   const [error, setError] = useState<string | null>(null);
-  const [currentMode, setCurrentMode] = useState<"login" | "register">(mode);
-
-  useEffect(() => {
-    setCurrentMode(mode);
-  }, [mode]);
-
-  useEffect(() => {
-    // If already authenticated redirect to rooms
-    getCurrentProfile().then((profile) => {
-      if (profile && typeof window !== "undefined") {
-        window.location.href = "/rooms";
-      }
-    });
-  }, []);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
 
     if (nickname.trim().length < 3) {
-      setError("Ник минимум 3 символа");
+      setError("Никнейм минимум 3 символа");
       return;
     }
     if (password.length < 1) {
@@ -40,15 +24,40 @@ export default function AuthForm({ mode }: { mode: "login" | "register" }) {
       return;
     }
 
-    try {
-      if (currentMode === "register") {
-        await signUpWithNickname(nickname.trim(), password);
-      } else {
-        await signInWithNickname(nickname.trim(), password);
+    const passHash = await hashPassword(password);
+
+    if (mode === "register") {
+      const { data, error } = await supabase
+        .from("users")
+        .insert({ nickname, password_hash: passHash })
+        .select("id, nickname")
+        .single();
+
+      if (error) {
+        setError(error.message);
+        return;
       }
-      window.location.href = "/rooms";
-    } catch (err: any) {
-      setError(err?.message || "Ошибка авторизации");
+
+      setSession({ userId: data.id, nickname: data.nickname });
+      window.location.href = "/lobby";
+    } else {
+      const { data, error } = await supabase
+        .from("users")
+        .select("id, nickname, password_hash")
+        .eq("nickname", nickname)
+        .single();
+
+      if (error || !data) {
+        setError("Неверный никнейм или пароль");
+        return;
+      }
+      if (data.password_hash !== passHash) {
+        setError("Неверный никнейм или пароль");
+        return;
+      }
+
+      setSession({ userId: data.id, nickname: data.nickname });
+      window.location.href = "/lobby";
     }
   }
 
@@ -59,24 +68,24 @@ export default function AuthForm({ mode }: { mode: "login" | "register" }) {
         className="bg-neutral-800 border border-neutral-700 rounded-xl p-6 w-full max-w-sm flex flex-col gap-4"
       >
         <h1 className="text-xl font-bold text-center">
-          MoW Battle Planner Online
+          Men of War 2 Battle Planner Online
         </h1>
 
         <div className="flex gap-2 text-sm justify-center">
           <button
             type="button"
-            onClick={() => setCurrentMode("register")}
+            onClick={() => setMode("register")}
             className={`px-3 py-1 rounded ${
-              currentMode === "register" ? "bg-neutral-700" : "bg-neutral-900"
+              mode === "register" ? "bg-neutral-700" : "bg-neutral-900"
             }`}
           >
             Регистрация
           </button>
           <button
             type="button"
-            onClick={() => setCurrentMode("login")}
+            onClick={() => setMode("login")}
             className={`px-3 py-1 rounded ${
-              currentMode === "login" ? "bg-neutral-700" : "bg-neutral-900"
+              mode === "login" ? "bg-neutral-700" : "bg-neutral-900"
             }`}
           >
             Вход
@@ -103,15 +112,7 @@ export default function AuthForm({ mode }: { mode: "login" | "register" }) {
           type="submit"
           className="mt-2 px-3 py-2 rounded bg-green-600 hover:bg-green-500 text-sm font-semibold"
         >
-          {currentMode === "register" ? "Создать аккаунт" : "Войти"}
-        </button>
-
-        <button
-          type="button"
-          className="text-xs text-neutral-400 hover:text-neutral-200"
-          onClick={() => signOut()}
-        >
-          Сбросить локальную сессию
+          {mode === "register" ? "Создать аккаунт" : "Войти"}
         </button>
       </form>
     </div>
