@@ -7,15 +7,24 @@ function normalizeNickname(nickname: string) {
 }
 
 function buildHiddenEmail(nickname: string) {
-  const domain =
-    process.env.AUTH_EMAIL_DOMAIN || process.env.NEXT_PUBLIC_SUPABASE_URL || "users.mowbp.local";
+  // Use a deterministic, globally valid domain to satisfy Supabase email validation
+  // while keeping the UI nickname-only. If AUTH_EMAIL_DOMAIN is not provided, fall
+  // back to a safe example TLD instead of any ".local" suffixes that trigger
+  // "invalid email" errors on the platform.
+  const configuredDomain = process.env.AUTH_EMAIL_DOMAIN;
+  const fallbackDomain = "mowbp.example.com";
 
   const safeDomain = (() => {
+    if (!configuredDomain) return fallbackDomain;
     try {
-      const parsed = new URL(domain.startsWith("http") ? domain : `https://${domain}`);
-      return parsed.hostname || "users.mowbp.local";
+      const parsed = new URL(
+        configuredDomain.startsWith("http")
+          ? configuredDomain
+          : `https://${configuredDomain}`,
+      );
+      return parsed.hostname || fallbackDomain;
     } catch {
-      return domain.includes(".") ? domain : `${domain}.local`;
+      return configuredDomain.includes(".") ? configuredDomain : fallbackDomain;
     }
   })();
 
