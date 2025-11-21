@@ -6,6 +6,7 @@ type DrawingMode = "none" | "front" | "enemy";
 
 type SceneContext = {
   roomId: string;
+  userId: string;
   echelon: number;
   canControl: boolean;
   currentMapId: string;
@@ -18,81 +19,40 @@ type SceneContext = {
 type UnitRecord = {
   id: string;
   room_id: string;
-  echelon_index: number;
-  type: string;
+  echelon: number;
+  symbol_key: string;
   x: number;
   y: number;
   z_index: number;
-  symbol_name: string | null;
-  owner_slot: number | null;
+  team: string | null;
+  slot: number | null;
+  nickname: string | null;
 };
 
 type DrawingRecord = {
   id: string;
   room_id: string;
-  echelon_index: number;
+  echelon: number;
   type: string;
   points: { x: number; y: number }[];
   style: any;
 };
 
-// Иконки как в оффлайне
-const ICON_NAMES = [
-  "symb1",
-  "symb2",
-  "symb3",
-  "symb4",
-  "symb5",
-  "symb6",
-  "symb7",
-  "symb8",
-  "symb9",
-  "symb10",
-  "symb11",
-  "symb12",
-  "symb13",
-  "symb14",
-  "symb15",
-  "symb16",
-  "symb17",
-  "symb18",
-  "symb19",
-  "symb20",
-  "symb21",
-  "symb22",
-  "symb23",
-  "symb24",
-  "symb25",
-  "symb26",
-  "symb27",
-  "symb28",
-  "symb29",
-  "symb30",
-  "symb31",
-  "symb32",
-  "symb33",
-  "symb34",
-  "symb35",
-];
+const ICON_NAMES = Array.from({ length: 35 }, (_, i) => `symb${i + 1}`);
+const NATIONS = ["ussr", "germany", "usa"];
+const REGIMENTS_PER_NATION = 17;
 
-// Цвет подсветки по owner_slot:
-// 1–5  → зелёный (синие юниты)
-// 6–10 → красный (красные юниты)
-// остальное — без подсветки
-function getOwnerHaloColor(slot: number | null | undefined): number | null {
+function haloColor(slot: number | null | undefined) {
   if (!slot || slot <= 0) return null;
-  if (slot >= 1 && slot <= 5) {
-    return 0x22c55e;
-  }
-  if (slot >= 6 && slot <= 10) {
-    return 0xef4444;
-  }
+  if (slot >= 1 && slot <= 5) return 0x22c55e;
+  if (slot >= 6 && slot <= 10) return 0xef4444;
   return null;
 }
 
 export class BattleScene extends Phaser.Scene {
   private ctx: SceneContext = {
     roomId: "",
+    userId: "",
     echelon: 0,
     canControl: false,
     currentMapId: "map1",
@@ -107,8 +67,7 @@ export class BattleScene extends Phaser.Scene {
   private unitSprites: Map<string, Phaser.GameObjects.Image> = new Map();
   private unitHalos: Map<string, Phaser.GameObjects.Graphics> = new Map();
 
-  private drawingGraphics: Map<string, Phaser.GameObjects.Graphics> =
-    new Map();
+  private drawingGraphics: Map<string, Phaser.GameObjects.Graphics> = new Map();
   private currentDrawingGraphics?: Phaser.GameObjects.Graphics;
   private currentDrawingPoints: { x: number; y: number }[] = [];
   private isPointerDownForDrawing = false;
@@ -116,7 +75,9 @@ export class BattleScene extends Phaser.Scene {
   private pointerDownPos: { x: number; y: number } | null = null;
   private isDraggingUnit = false;
 
-  private isReady = false;
+  private lastMoveAt = 0;
+  private placements: number[] = [];
+  private realtimeChannel: any;
 
   constructor() {
     super("BattleScene");
@@ -127,19 +88,17 @@ export class BattleScene extends Phaser.Scene {
     const prevMap = this.ctx.currentMapId;
     const prevDrawingsVersion = this.ctx.drawingsVersion;
 
-    this.ctx = { ...this.ctx, ...partial };
+    this.ctx = { ...this.ctx, ...partial } as SceneContext;
 
-    if (!this.isReady) return;
+    if (!this.scene.isActive()) return;
 
     if (partial.echelon !== undefined && partial.echelon !== prevEchelon) {
       this.reloadUnits();
       this.reloadDrawings();
+      this.restartRealtime();
     }
 
-    if (
-      partial.currentMapId !== undefined &&
-      partial.currentMapId !== prevMap
-    ) {
+    if (partial.currentMapId !== undefined && partial.currentMapId !== prevMap) {
       this.loadNewMapTexture();
     }
 
@@ -155,8 +114,14 @@ export class BattleScene extends Phaser.Scene {
     ICON_NAMES.forEach((name) => {
       this.load.image(name, `/assets/symbols/${name}.png`);
     });
-
     this.load.image("unit_default", "/assets/symbols/symb5.png");
+
+    NATIONS.forEach((nation) => {
+      for (let i = 1; i <= REGIMENTS_PER_NATION; i++) {
+        const key = `${nation}_reg${i}`;
+        this.load.image(key, `/assets/${nation}/reg${i}.png`);
+      }
+    });
   }
 
   async create() {
@@ -164,11 +129,10 @@ export class BattleScene extends Phaser.Scene {
 
     await this.loadNewMapTexture();
     this.initInputHandlers();
-
     await this.reloadUnits();
     await this.reloadDrawings();
+    this.restartRealtime();
 
-    this.isReady = true;
     this.game.events.emit("ready");
   }
 
@@ -183,18 +147,20 @@ export class BattleScene extends Phaser.Scene {
       });
     }
 
-    if (this.mapImage) {
-      this.mapImage.destroy();
-    }
+    if (this.mapImage) this.mapImage.destroy();
 
     this.mapImage = this.add
       .image(0, 0, texKey)
       .setOrigin(0, 0)
       .setDisplaySize(this.scale.width, this.scale.height);
+
+    this.cameras.main.setBounds(0, 0, this.mapImage.displayWidth, this.mapImage.displayHeight);
+    this.cameras.main.setZoom(1);
+    this.cameras.main.setScroll(0, 0);
   }
 
   private async reloadUnits() {
-    this.unitSprites.forEach((sprite) => sprite.destroy());
+    this.unitSprites.forEach((s) => s.destroy());
     this.unitHalos.forEach((g) => g.destroy());
     this.unitSprites.clear();
     this.unitHalos.clear();
@@ -202,35 +168,28 @@ export class BattleScene extends Phaser.Scene {
     if (!this.ctx.roomId) return;
 
     const { data, error } = await supabase
-      .from("units")
-      .select(
-        "id, room_id, echelon_index, type, x, y, z_index, symbol_name, owner_slot",
-      )
+      .from("room_units")
+      .select("id, room_id, echelon, symbol_key, x, y, z_index, team, slot, nickname")
       .eq("room_id", this.ctx.roomId)
-      .eq("echelon_index", this.ctx.echelon);
+      .eq("echelon", this.ctx.echelon);
 
     if (error) {
-      console.error("Ошибка загрузки units:", error);
+      console.error("Ошибка загрузки room_units:", error);
       return;
     }
 
-    const units = (data || []) as UnitRecord[];
-
-    units.forEach((u) => {
-      this.spawnUnitSprite(u);
-    });
+    (data as UnitRecord[]).forEach((u) => this.spawnUnitSprite(u));
   }
 
   private spawnUnitSprite(u: UnitRecord) {
     const textureKey = this.resolveUnitTexture(u);
-
-    const haloColor = getOwnerHaloColor(u.owner_slot);
+    const haloC = haloColor(u.slot || null);
     let halo: Phaser.GameObjects.Graphics | undefined;
 
-    if (haloColor !== null) {
+    if (haloC !== null) {
       halo = this.add.graphics();
-      halo.fillStyle(haloColor, 0.22);
-      halo.lineStyle(1, haloColor, 0.5);
+      halo.fillStyle(haloC, 0.22);
+      halo.lineStyle(1, haloC, 0.5);
       halo.beginPath();
       halo.arc(u.x, u.y, 24, 0, Math.PI * 2);
       halo.closePath();
@@ -242,10 +201,9 @@ export class BattleScene extends Phaser.Scene {
 
     const sprite = this.add
       .image(u.x, u.y, textureKey)
-      .setOrigin(0.5, 0.5);
-
-    sprite.setDepth(u.z_index || 0);
-    sprite.setInteractive({ draggable: true });
+      .setOrigin(0.5, 0.5)
+      .setDepth(u.z_index || 0)
+      .setInteractive({ draggable: true });
 
     this.input.setDraggable(sprite, this.ctx.canControl);
 
@@ -253,95 +211,81 @@ export class BattleScene extends Phaser.Scene {
       this.isDraggingUnit = true;
     });
 
-    sprite.on(
-      "drag",
-      (_pointer: Phaser.Input.Pointer, dragX: number, dragY: number) => {
-        sprite.x = dragX;
-        sprite.y = dragY;
-
-        const haloObj = this.unitHalos.get(u.id);
-        if (haloObj) {
-          haloObj.clear();
-          const c = getOwnerHaloColor(u.owner_slot);
-          if (c !== null) {
-            haloObj.fillStyle(c, 0.22);
-            haloObj.lineStyle(1, c, 0.5);
-            haloObj.beginPath();
-            haloObj.arc(dragX, dragY, 24, 0, Math.PI * 2);
-            haloObj.closePath();
-            haloObj.fillPath();
-            haloObj.strokePath();
-          }
+    sprite.on("drag", (_pointer, dragX, dragY) => {
+      sprite.x = dragX;
+      sprite.y = dragY;
+      const haloObj = this.unitHalos.get(u.id);
+      if (haloObj) {
+        haloObj.clear();
+        const c = haloColor(u.slot || null);
+        if (c !== null) {
+          haloObj.fillStyle(c, 0.22);
+          haloObj.lineStyle(1, c, 0.5);
+          haloObj.beginPath();
+          haloObj.arc(dragX, dragY, 24, 0, Math.PI * 2);
+          haloObj.closePath();
+          haloObj.fillPath();
+          haloObj.strokePath();
         }
-      },
-    );
+      }
+    });
 
     sprite.on("dragend", async () => {
-      const newX = sprite.x;
-      const newY = sprite.y;
-      this.isDraggingUnit = false;
-
-      if (!this.ctx.canControl) {
-        return;
-      }
+      const now = Date.now();
+      if (!this.ctx.canControl) return;
+      if (now - this.lastMoveAt < 1000) return; // 1 move per second
+      this.lastMoveAt = now;
 
       const { error } = await supabase
-        .from("units")
-        .update({
-          x: newX,
-          y: newY,
-          z_index: sprite.depth ?? 0,
-        })
+        .from("room_units")
+        .update({ x: sprite.x, y: sprite.y, z_index: sprite.depth || 0 })
         .eq("id", u.id);
 
-      if (error) {
-        console.error("Ошибка обновления позиции юнита:", error);
-      }
+      if (error) console.error("Ошибка обновления юнита", error);
     });
 
     this.unitSprites.set(u.id, sprite);
   }
 
   private resolveUnitTexture(u: UnitRecord): string {
-    if (u.symbol_name && this.textures.exists(u.symbol_name)) {
-      return u.symbol_name;
-    }
-    if (this.textures.exists("unit_default")) {
-      return "unit_default";
-    }
+    if (u.symbol_key && this.textures.exists(u.symbol_key)) return u.symbol_key;
+    if (this.textures.exists("unit_default")) return "unit_default";
     return ICON_NAMES[4] || "symb5";
   }
 
   private async createUnitAt(x: number, y: number) {
-    if (!this.ctx.roomId) return;
-    if (!this.ctx.selectedSymbol) return;
+    if (!this.ctx.roomId || !this.ctx.selectedSymbol) return;
+    const now = Date.now();
+    this.placements = this.placements.filter((ts) => now - ts < 1000);
+    if (this.placements.length >= 5) return; // 5 symbols per second
+    this.placements.push(now);
 
     const payload = {
       room_id: this.ctx.roomId,
-      echelon_index: this.ctx.echelon,
-      type: "symbol",
+      echelon: this.ctx.echelon,
+      symbol_key: this.ctx.selectedSymbol,
       x,
       y,
       z_index: Date.now(),
-      symbol_name: this.ctx.selectedSymbol,
-      owner_slot: this.ctx.ownerSlot ?? 0,
+      team: this.ctx.ownerSlot && this.ctx.ownerSlot <= 5 ? "blue" : this.ctx.ownerSlot ? "red" : null,
+      slot: this.ctx.ownerSlot,
+      nickname: null,
     };
 
     const { data, error } = await supabase
-      .from("units")
+      .from("room_units")
       .insert(payload)
       .select(
-        "id, room_id, echelon_index, type, x, y, z_index, symbol_name, owner_slot",
+        "id, room_id, echelon, symbol_key, x, y, z_index, team, slot, nickname",
       )
       .single();
 
     if (error) {
-      console.error("Ошибка создания юнита:", error);
+      console.error("Ошибка создания юнита", error);
       return;
     }
 
-    const rec = data as UnitRecord;
-    this.spawnUnitSprite(rec);
+    this.spawnUnitSprite(data as UnitRecord);
   }
 
   private async reloadDrawings() {
@@ -351,29 +295,17 @@ export class BattleScene extends Phaser.Scene {
     if (!this.ctx.roomId) return;
 
     const { data, error } = await supabase
-      .from("drawings")
-      .select("id, room_id, echelon_index, type, points, style")
+      .from("room_drawings")
+      .select("id, room_id, echelon, type, points, style")
       .eq("room_id", this.ctx.roomId)
-      .eq("echelon_index", this.ctx.echelon);
+      .eq("echelon", this.ctx.echelon);
 
     if (error) {
-      console.error("Ошибка загрузки drawings:", error);
+      console.error("Ошибка загрузки рисунков", error);
       return;
     }
 
-    const drawings = (data || []) as any[];
-
-    drawings.forEach((raw) => {
-      const rec: DrawingRecord = {
-        id: raw.id,
-        room_id: raw.room_id,
-        echelon_index: raw.echelon_index,
-        type: raw.type,
-        points: raw.points || [],
-        style: raw.style,
-      };
-      this.drawStoredDrawing(rec);
-    });
+    (data as any[]).forEach((raw) => this.drawStoredDrawing(raw as DrawingRecord));
   }
 
   private drawStoredDrawing(rec: DrawingRecord) {
@@ -381,10 +313,9 @@ export class BattleScene extends Phaser.Scene {
 
     const g = this.add.graphics();
     const color = 0xff0000;
-    const alpha = 1;
 
     if (rec.type === "front_line") {
-      g.lineStyle(2, color, alpha);
+      g.lineStyle(2, color, 1);
       g.beginPath();
       g.moveTo(rec.points[0].x, rec.points[0].y);
       for (let i = 1; i < rec.points.length; i++) {
@@ -392,7 +323,7 @@ export class BattleScene extends Phaser.Scene {
       }
       g.strokePath();
     } else if (rec.type === "enemy_area") {
-      g.lineStyle(1, color, 0.8);
+      g.lineStyle(1, color, 0.9);
       g.fillStyle(color, 0.15);
       g.beginPath();
       g.moveTo(rec.points[0].x, rec.points[0].y);
@@ -408,12 +339,10 @@ export class BattleScene extends Phaser.Scene {
   }
 
   private redrawCurrentDrawing() {
-    if (!this.currentDrawingGraphics || this.currentDrawingPoints.length < 2)
-      return;
+    if (!this.currentDrawingGraphics || this.currentDrawingPoints.length < 2) return;
 
     const g = this.currentDrawingGraphics;
     g.clear();
-
     const color = 0xff0000;
 
     if (this.ctx.drawingMode === "front") {
@@ -471,10 +400,7 @@ export class BattleScene extends Phaser.Scene {
           if (!this.isPointerDownForDrawing) return;
           if (!this.currentDrawingGraphics) return;
 
-          const last =
-            this.currentDrawingPoints[
-              this.currentDrawingPoints.length - 1
-            ];
+          const last = this.currentDrawingPoints[this.currentDrawingPoints.length - 1];
           const dx = pointer.x - last.x;
           const dy = pointer.y - last.y;
           if (dx * dx + dy * dy < 4) return;
@@ -497,50 +423,34 @@ export class BattleScene extends Phaser.Scene {
 
         if (this.ctx.drawingMode !== "none") {
           if (!this.isPointerDownForDrawing) return;
-
           this.isPointerDownForDrawing = false;
 
-          if (
-            !this.ctx.roomId ||
-            this.currentDrawingPoints.length < 2
-          ) {
-            if (this.currentDrawingGraphics) {
-              this.currentDrawingGraphics.destroy();
-              this.currentDrawingGraphics = undefined;
-            }
+          if (!this.ctx.roomId || this.currentDrawingPoints.length < 2) {
+            this.currentDrawingGraphics?.destroy();
+            this.currentDrawingGraphics = undefined;
             this.currentDrawingPoints = [];
             return;
           }
 
-          const type =
-            this.ctx.drawingMode === "front"
-              ? "front_line"
-              : "enemy_area";
-
+          const type = this.ctx.drawingMode === "front" ? "front_line" : "enemy_area";
           const payload = {
             room_id: this.ctx.roomId,
-            echelon_index: this.ctx.echelon,
+            echelon: this.ctx.echelon,
             type,
             points: this.currentDrawingPoints,
-            style: {
-              color: "#ff0000",
-              width: 2,
-              fill: this.ctx.drawingMode === "enemy",
-            },
+            style: { color: "#ff0000", width: 2, fill: this.ctx.drawingMode === "enemy" },
           };
 
           const { data, error } = await supabase
-            .from("drawings")
+            .from("room_drawings")
             .insert(payload)
             .select("id")
             .single();
 
           if (error) {
-            console.error("Ошибка сохранения рисунка:", error);
-            if (this.currentDrawingGraphics) {
-              this.currentDrawingGraphics.destroy();
-              this.currentDrawingGraphics = undefined;
-            }
+            console.error("Ошибка сохранения рисунка", error);
+            this.currentDrawingGraphics?.destroy();
+            this.currentDrawingGraphics = undefined;
           } else {
             const id = (data as any).id as string;
             if (this.currentDrawingGraphics) {
@@ -554,18 +464,15 @@ export class BattleScene extends Phaser.Scene {
         }
 
         if (!this.pointerDownPos) return;
-
         const dx = pointer.x - this.pointerDownPos.x;
         const dy = pointer.y - this.pointerDownPos.y;
         const dist2 = dx * dx + dy * dy;
-
         this.pointerDownPos = null;
 
         if (this.isDraggingUnit) {
           this.isDraggingUnit = false;
           return;
         }
-
         if (!this.ctx.selectedSymbol) return;
         if (dist2 > 16) return;
 
@@ -573,6 +480,44 @@ export class BattleScene extends Phaser.Scene {
       },
       this,
     );
+  }
+
+  private restartRealtime() {
+    if (this.realtimeChannel) {
+      supabase.removeChannel(this.realtimeChannel);
+    }
+
+    if (!this.ctx.roomId) return;
+
+    this.realtimeChannel = supabase
+      .channel(`rt-${this.ctx.roomId}-${this.ctx.echelon}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "room_units",
+          filter: `room_id=eq.${this.ctx.roomId}`,
+        },
+        (payload) => {
+          if ((payload.new as any).echelon !== this.ctx.echelon) return;
+          this.reloadUnits();
+        },
+      )
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "room_drawings",
+          filter: `room_id=eq.${this.ctx.roomId}`,
+        },
+        (payload) => {
+          if ((payload.new as any).echelon !== this.ctx.echelon) return;
+          this.reloadDrawings();
+        },
+      )
+      .subscribe();
   }
 }
 

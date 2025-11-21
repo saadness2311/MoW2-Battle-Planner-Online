@@ -2,7 +2,13 @@
 "use client";
 
 import { useState } from "react";
-import type { PlayerInfo } from "../RoomLayout";
+
+type PlayerInfo = {
+  id: string;
+  nickname: string;
+  isOwner: boolean;
+  isCurrentTurn: boolean;
+};
 
 type TopRoomPanelProps = {
   roomName: string;
@@ -12,6 +18,7 @@ type TopRoomPanelProps = {
   onGiveTurn: (userId: string) => void;
   onTakeTurn: (userId: string) => void;
   onLockRoom: () => void;
+  onSetEditor: (userId: string) => void;
 };
 
 export default function TopRoomPanel({
@@ -22,6 +29,7 @@ export default function TopRoomPanel({
   onGiveTurn,
   onTakeTurn,
   onLockRoom,
+  onSetEditor,
 }: TopRoomPanelProps) {
   const [expanded, setExpanded] = useState(true);
 
@@ -103,6 +111,16 @@ export default function TopRoomPanel({
 
                 {isAdmin && !p.isOwner && (
                   <div className="flex items-center gap-1">
+                    <button
+                      className="px-2 py-[1px] rounded bg-[#1f2933] border border-zinc-700 hover:border-amber-400 text-[10px] text-amber-200"
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onSetEditor(p.id);
+                      }}
+                    >
+                      Редакт.
+                    </button>
                     {!p.isCurrentTurn ? (
                       <button
                         className="px-2 py-[1px] rounded bg-[#1f2933] border border-zinc-700 hover:border-emerald-400 text-[10px] text-emerald-300"
